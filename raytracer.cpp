@@ -283,9 +283,10 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
         }
     };
 
-	constexpr int tiles_per_worker = 4;
+        constexpr int tiles_per_worker = 4;
     const int tile_height = std::max(1, height / (size * tiles_per_worker));
-	enum class Tag : int { WORK = 1, RESULT = 2 };
+    const int master_tile_height = std::max(1, tile_height / 2); // Rank 0 uses smaller tiles to offset communication overhead
+        enum class Tag : int { WORK = 1, RESULT = 2 };
 
     if (rank == 0) {
 		//1.: Initialize memory
@@ -315,7 +316,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
         auto send_work = [&](int worker_rank) {
             if (next_row >= height) {  //All work was distributed already. Send termination signal
                 int term[2] = {-1, 0}; //This is termination header
-                MPI_Send(term, 2, MPI_INT, worker_rank, Tag::WORK, MPI_COMM_WORLD);
+                MPI_Send(term, 2, MPI_INT, worker_rank, static_cast<int>(Tag::WORK), MPI_COMM_WORLD);
                 --active_workers;      //When worker receives "term", it will return and thus become inactive
                 return;
             }
@@ -323,61 +324,81 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 			//If we are here, there is still work left to distribute
             int rows = std::min(tile_height, height - next_row); //Last tile could be smaller
             int msg[2] = {next_row, rows}; //We send start row and number of rows
-            MPI_Send(msg, 2, MPI_INT, worker_rank, Tag::WORK, MPI_COMM_WORLD);
+            MPI_Send(msg, 2, MPI_INT, worker_rank, static_cast<int>(Tag::WORK), MPI_COMM_WORLD);
             next_row += rows;
         };
 
-		//Send initial tiles
+        //Send initial tiles
         for (int r = 1; r <= active_workers; ++r)
             send_work(r);
 
-		//3.: Main loop: wait for results of workers and distribute new tasks
-        std::vector<unsigned char> local_buf; //This will receive pixels of workers
+                //3.: Main loop: poll for finished work from any worker before doing our own work
+        std::vector<unsigned char> recv_buf; //This will receive pixels of workers
+        std::vector<unsigned char> local_buf;
         while (active_workers > 0) {
-			//Wait for worker thread to finish tile
-            MPI_Status status;
-            int header[2];
-            MPI_Recv(header, 2, MPI_INT, MPI_ANY_SOURCE, Tag::RESULT, MPI_COMM_WORLD, &status);
+            MPI_Status status{};
+            int flag = 0;
 
-			//Get info about finished tile
-            int start = header[0];
-            int rows = header[1];
+            // Drain all available results to keep workers busy before doing local work.
+            while (true) {
+                MPI_Iprobe(MPI_ANY_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, &flag, &status);
+                if (!flag) break;
 
-			//Get pixels of finished tile
-            std::vector<unsigned char> recv_buf(rows * width * 3);
-            MPI_Recv(recv_buf.data(), recv_buf.size(), MPI_UNSIGNED_CHAR, status.MPI_SOURCE, Tag::RESULT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                int header[2];
+                MPI_Recv(header, 2, MPI_INT, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, &status);
 
-			//Copy pixels of finished tile into "out_pixels" at correct position
-            for (int row = 0; row < rows; ++row) {
-                for (int col = 0; col < width; ++col) {
-                    size_t idx = (row * width + col) * 3;
-                    out_pixels[(start + row) * width + col] = Color(recv_buf[idx], recv_buf[idx + 1], recv_buf[idx + 2]);
+                const int start = header[0];
+                const int rows = header[1];
+                recv_buf.resize(rows * width * 3);
+                MPI_Recv(recv_buf.data(), recv_buf.size(), MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+                // Immediately dispatch more work so the worker does not idle while we copy data.
+                send_work(status.MPI_SOURCE);
+
+                for (int row = 0; row < rows; ++row) {
+                    const size_t base = static_cast<size_t>(row * width) * 3;
+                    for (int col = 0; col < width; ++col) {
+                        size_t idx = base + static_cast<size_t>(col) * 3;
+                        out_pixels[(start + row) * width + col] = Color(recv_buf[idx], recv_buf[idx + 1], recv_buf[idx + 2]);
+                    }
                 }
             }
 
-			//Send worker new work (TODO: Do this before copying all the data so worker can get back to work)
-            send_work(status.MPI_SOURCE);
-
-			//Do some work yourself
-			//TODO: This only handles a single worker inbetween doing work itself. This has to be fixed! We have to handle all worker threads before. 
-			//TODO: It is unclear whether this thread should do work at all. At least for many many threads, there will already be a lot of communication. We should test this. Additionally, we should test some "middle ground" where the worker thread only does tiles which are half as big or something.
+                        //Do some work yourself using slightly smaller tiles to compensate for communication overhead
             if (next_row < height) {
-                int rows_to_compute = std::min(tile_height, height - next_row);
+                int rows_to_compute = std::min(master_tile_height, height - next_row);
                 compute_tile_flat(next_row, rows_to_compute, local_buf);
                 for (int row = 0; row < rows_to_compute; ++row) {
                     for (int col = 0; col < width; ++col) {
-                        size_t idx = (row * width + col) * 3;
+                        size_t idx = (static_cast<size_t>(row) * width + col) * 3;
                         out_pixels[(next_row + row) * width + col] = Color(local_buf[idx], local_buf[idx + 1], local_buf[idx + 2]);
                     }
                 }
                 next_row += rows_to_compute;
+                continue;
+            }
+
+            // If there is no local work left, block for the next result to avoid spinning.
+            int header[2];
+            MPI_Recv(header, 2, MPI_INT, MPI_ANY_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, &status);
+            const int start = header[0];
+            const int rows = header[1];
+            recv_buf.resize(rows * width * 3);
+            MPI_Recv(recv_buf.data(), recv_buf.size(), MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            send_work(status.MPI_SOURCE);
+            for (int row = 0; row < rows; ++row) {
+                const size_t base = static_cast<size_t>(row * width) * 3;
+                for (int col = 0; col < width; ++col) {
+                    size_t idx = base + static_cast<size_t>(col) * 3;
+                    out_pixels[(start + row) * width + col] = Color(recv_buf[idx], recv_buf[idx + 1], recv_buf[idx + 2]);
+                }
             }
         }
     } else {
 		//Worker threads
         while (true) {
             int msg[2];
-            MPI_Recv(msg, 2, MPI_INT, 0, Tag::WORK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(msg, 2, MPI_INT, 0, static_cast<int>(Tag::WORK), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             int start = msg[0];
             int rows = msg[1];
             if (start < 0 || rows <= 0) break;
@@ -386,8 +407,8 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             compute_tile_flat(start, rows, send_buf);
 
             int header[2] = {start, rows};
-            MPI_Send(header, 2, MPI_INT, 0, Tag::RESULT, MPI_COMM_WORLD);
-            MPI_Send(send_buf.data(), send_buf.size(), MPI_UNSIGNED_CHAR, 0, Tag::RESULT, MPI_COMM_WORLD);
+            MPI_Send(header, 2, MPI_INT, 0, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD);
+            MPI_Send(send_buf.data(), send_buf.size(), MPI_UNSIGNED_CHAR, 0, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD);
         }
         out_pixels.clear(); //TODO: This seems unnecessary
     }
