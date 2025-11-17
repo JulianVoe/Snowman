@@ -45,57 +45,20 @@ int main(int argc, char* argv[]) {
     RayTracer raytracer(image_size, image_size);
     raytracer.set_scene(&scene);
 
-    std::vector<Color> local_pixels;
+    std::vector<Color> pixels;
 
     // Local Computation Time using std::chrono
     auto compute_start_time = std::chrono::high_resolution_clock::now();
-    raytracer.render(rank, size, local_pixels);
+    raytracer.render(rank, size, pixels);
     auto compute_end_time = std::chrono::high_resolution_clock::now();
 
     // Calculate duration in seconds
     std::chrono::duration<double> local_compute_duration = compute_end_time - compute_start_time;
     double local_compute_time = local_compute_duration.count();
 
-    // Convert local_pixels to local_buf for MPI communication
-    std::vector<unsigned char> local_buf(local_pixels.size() * 3);
-    for (size_t i = 0; i < local_pixels.size(); ++i) {
-        local_buf[3*i + 0] = local_pixels[i].r;
-        local_buf[3*i + 1] = local_pixels[i].g;
-        local_buf[3*i + 2] = local_pixels[i].b;
-    }
-
-    int rows_per_rank = image_size / size;
-    int local_rows = (rank == size - 1) ? (image_size - rows_per_rank * (size - 1)) : rows_per_rank;
-    int local_count = local_rows * image_size * 3; // 3 bytes per pixel
-
-    std::vector<int> recvcounts(size);
-    std::vector<int> displs(size);
-
-    for (int i = 0; i < size; ++i) {
-        int rows = (i == size -1) ? (image_size - rows_per_rank * (size - 1)) : rows_per_rank;
-        recvcounts[i] = rows * image_size * 3;
-        displs[i] = (i == 0) ? 0 : displs[i-1] + recvcounts[i-1];
-    }
-
-    std::vector<unsigned char> full_buf;
-    if (rank == 0) {
-        full_buf.resize(image_size * image_size * 3);
-    }
-
-    // MPI_Gatherv communication
-    MPI_Gatherv(local_buf.data(), local_count, MPI_UNSIGNED_CHAR,
-                full_buf.data(), recvcounts.data(), displs.data(), MPI_UNSIGNED_CHAR,
-                0, MPI_COMM_WORLD);
-
     // Image saving
     if (rank == 0) {
-        // Convert full buffer to vector<Color>
-        std::vector<Color> full_pixels(image_size * image_size);
-        for (int i = 0; i < image_size * image_size; ++i) {
-            full_pixels[i] = Color(full_buf[3*i], full_buf[3*i + 1], full_buf[3*i + 2]);
-        }
-
-        raytracer.save_image("output.ppm", full_pixels);
+        raytracer.save_image("output.ppm", pixels);
         std::cout << "Image saved to output.ppm\n";
     }
 
