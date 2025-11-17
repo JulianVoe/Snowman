@@ -63,11 +63,13 @@ bool RayTracer::intersect_plane(const Vec3& ray_orig, const Vec3& ray_dir, const
 }
 
 void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
+	//Make sure we have a scene set
     if (!scene) {
         if (rank == 0) std::cerr << "Scene not set!\n";
         return;
     }
 
+	//Set up camera
     Vec3 camera_pos(0, 2, 5); // Camera position
     Vec3 camera_lookat(0, 1, 0); // Point camera is looking at
     Vec3 camera_dir = (camera_lookat - camera_pos).normalize();
@@ -82,7 +84,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
     Vec3 sunlight_dir = Vec3(-1, -1, -1).normalize(); // Direction of sunlight
     double ambient = 0.3; // Base ambient light in the scene
 
-    // Find floor plane (normal y ~1 and point.y ~0)
+    //Find floor plane (normal y ~1 and point.y ~0)
     const Plane* floor_plane = nullptr;
     for (const auto& plane : scene->planes) {
         if (plane.normal.y > 0.99 && std::abs(plane.point.y) < 1e-3) {
@@ -91,6 +93,16 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
         }
     }
 
+	//Generate snowflakes
+	// This is done by only one thread and then broadcasted instead of by all threads simultaneously.
+	// The reason is that only this way we get a consistent image: snowflakes are circles which could
+	// extend over tile-borders. If the workers of these tiles have a different snowflake there, it 
+	// would cause inconsistencies.
+	//   Note: This wouldn't happen in original implementation, since all workers use the same seed 
+	//   for the rng. But this is the more conceptually correct way that allows runtime seeds. Also,
+	//   it is unclear whether this actually changes the runtime at all: first of all, the runtime of 
+	//   this is negligent. Second of all, we do introduce one more broadcast, but get rid of any load
+	//   imbalances due to some threads being faster at computing the snowflakes array.
     const int snowflake_count = 75000;
     std::vector<Vec3> snowflakes(snowflake_count);
     if (rank == 0) {
@@ -113,9 +125,12 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             snowflakes[i] = Vec3(x_rand, y_rand, z_rand);
         }
     }
-
     MPI_Bcast(snowflakes.data(), snowflake_count * 3, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
+	//This lambda will actually do the raytracing to compute the pixel values of a tile. 
+	//The output format is a flattened RGB array. We do it this way instead of "Color"-structs, as 
+	//this format allows direct sending/receiving using MPI and thus gets rid of the unnecessary 
+	//conversion inbetween
     auto compute_tile_flat = [&](int start_row, int row_count, std::vector<unsigned char>& buffer) {
         buffer.resize(row_count * width * 3);
         for (int y = start_row; y < start_row + row_count; ++y) {
@@ -130,7 +145,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 
                 double closest_t = std::numeric_limits<double>::max();
                 const Sphere* hit_sphere = nullptr;
-                const Plane* hit_plane = nullptr;
+                const Plane * hit_plane = nullptr;
 
                 // Find closest sphere hit
                 for (const auto& sphere : scene->spheres) {
@@ -268,12 +283,17 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
         }
     };
 
-    const int tile_height = std::max(1, height / (size * 4));
-    const int WORK_TAG = 1;
-    const int RESULT_TAG = 2;
+	constexpr int tiles_per_worker = 4;
+    const int tile_height = std::max(1, height / (size * tiles_per_worker));
+	enum class Tag : int { WORK = 1, RESULT = 2 };
 
     if (rank == 0) {
-        out_pixels.assign(width * height, Color());
+		//1.: Initialize memory
+		
+		//Initialize output vector
+        out_pixels.assign(width * height, Color()); //TODO: It is standard practice to initialize memory, but on other hand this is wasted time
+		
+		//If there is only one MPI thread, this has to do all work and no communication is required
         if (size == 1) {
             std::vector<unsigned char> full_buf;
             compute_tile_flat(0, height, full_buf);
@@ -285,36 +305,49 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             }
             return;
         }
+
+
+		//2.: Distribute initial work
         int next_row = 0;
         int active_workers = std::min(size - 1, (height + tile_height - 1) / tile_height);
 
+		//The following lambda just sends the next tile to "worker_rank"
         auto send_work = [&](int worker_rank) {
-            if (next_row >= height) {
-                int term[2] = {-1, 0};
-                MPI_Send(term, 2, MPI_INT, worker_rank, WORK_TAG, MPI_COMM_WORLD);
-                --active_workers;
+            if (next_row >= height) {  //All work was distributed already. Send termination signal
+                int term[2] = {-1, 0}; //This is termination header
+                MPI_Send(term, 2, MPI_INT, worker_rank, Tag::WORK, MPI_COMM_WORLD);
+                --active_workers;      //When worker receives "term", it will return and thus become inactive
                 return;
             }
-            int rows = std::min(tile_height, height - next_row);
-            int msg[2] = {next_row, rows};
-            MPI_Send(msg, 2, MPI_INT, worker_rank, WORK_TAG, MPI_COMM_WORLD);
+
+			//If we are here, there is still work left to distribute
+            int rows = std::min(tile_height, height - next_row); //Last tile could be smaller
+            int msg[2] = {next_row, rows}; //We send start row and number of rows
+            MPI_Send(msg, 2, MPI_INT, worker_rank, Tag::WORK, MPI_COMM_WORLD);
             next_row += rows;
         };
 
-        for (int r = 1; r <= active_workers; ++r) {
+		//Send initial tiles
+        for (int r = 1; r <= active_workers; ++r)
             send_work(r);
-        }
 
-        std::vector<unsigned char> local_buf;
+		//3.: Main loop: wait for results of workers and distribute new tasks
+        std::vector<unsigned char> local_buf; //This will receive pixels of workers
         while (active_workers > 0) {
+			//Wait for worker thread to finish tile
             MPI_Status status;
             int header[2];
-            MPI_Recv(header, 2, MPI_INT, MPI_ANY_SOURCE, RESULT_TAG, MPI_COMM_WORLD, &status);
+            MPI_Recv(header, 2, MPI_INT, MPI_ANY_SOURCE, Tag::RESULT, MPI_COMM_WORLD, &status);
+
+			//Get info about finished tile
             int start = header[0];
             int rows = header[1];
-            std::vector<unsigned char> recv_buf(rows * width * 3);
-            MPI_Recv(recv_buf.data(), recv_buf.size(), MPI_UNSIGNED_CHAR, status.MPI_SOURCE, RESULT_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
+			//Get pixels of finished tile
+            std::vector<unsigned char> recv_buf(rows * width * 3);
+            MPI_Recv(recv_buf.data(), recv_buf.size(), MPI_UNSIGNED_CHAR, status.MPI_SOURCE, Tag::RESULT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+			//Copy pixels of finished tile into "out_pixels" at correct position
             for (int row = 0; row < rows; ++row) {
                 for (int col = 0; col < width; ++col) {
                     size_t idx = (row * width + col) * 3;
@@ -322,8 +355,12 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                 }
             }
 
+			//Send worker new work (TODO: Do this before copying all the data so worker can get back to work)
             send_work(status.MPI_SOURCE);
 
+			//Do some work yourself
+			//TODO: This only handles a single worker inbetween doing work itself. This has to be fixed! We have to handle all worker threads before. 
+			//TODO: It is unclear whether this thread should do work at all. At least for many many threads, there will already be a lot of communication. We should test this. Additionally, we should test some "middle ground" where the worker thread only does tiles which are half as big or something.
             if (next_row < height) {
                 int rows_to_compute = std::min(tile_height, height - next_row);
                 compute_tile_flat(next_row, rows_to_compute, local_buf);
@@ -337,9 +374,10 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             }
         }
     } else {
+		//Worker threads
         while (true) {
             int msg[2];
-            MPI_Recv(msg, 2, MPI_INT, 0, WORK_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(msg, 2, MPI_INT, 0, Tag::WORK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             int start = msg[0];
             int rows = msg[1];
             if (start < 0 || rows <= 0) break;
@@ -348,10 +386,10 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             compute_tile_flat(start, rows, send_buf);
 
             int header[2] = {start, rows};
-            MPI_Send(header, 2, MPI_INT, 0, RESULT_TAG, MPI_COMM_WORLD);
-            MPI_Send(send_buf.data(), send_buf.size(), MPI_UNSIGNED_CHAR, 0, RESULT_TAG, MPI_COMM_WORLD);
+            MPI_Send(header, 2, MPI_INT, 0, Tag::RESULT, MPI_COMM_WORLD);
+            MPI_Send(send_buf.data(), send_buf.size(), MPI_UNSIGNED_CHAR, 0, Tag::RESULT, MPI_COMM_WORLD);
         }
-        out_pixels.clear();
+        out_pixels.clear(); //TODO: This seems unnecessary
     }
 }
 
