@@ -19,6 +19,7 @@
 #include <random>
 #include <cmath>
 #include <mpi.h>
+#include <algorithm>
 
 RayTracer::RayTracer(int w, int h) : width(w), height(h), scene(nullptr) {}
 
@@ -104,6 +105,9 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 	//   this is negligent. Second of all, we do introduce one more broadcast, but get rid of any load
 	//   imbalances due to some threads being faster at computing the snowflakes array.
     const int snowflake_count = 75000;
+    const double snowflake_radius = 0.008;
+    const double max_ray_distance = 8.0;
+
     std::vector<Vec3> snowflakes(snowflake_count);
     if (rank == 0) {
         std::mt19937 rng(12345);
@@ -126,6 +130,51 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
         }
     }
     MPI_Bcast(snowflakes.data(), snowflake_count * 3, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    struct SnowflakeProjection {
+        int min_x;
+        int max_x;
+        int min_y;
+        int max_y;
+        Vec3 position;
+    };
+
+    std::vector<SnowflakeProjection> projected_flakes;
+    projected_flakes.reserve(snowflake_count);
+    std::vector<std::vector<int>> flakes_by_row(height);
+
+    for (int i = 0; i < snowflake_count; ++i) {
+        const Vec3 cam_vec = snowflakes[i] - camera_pos;
+        const double distance = cam_vec.length();
+        if (distance <= 1e-9 || distance > max_ray_distance) continue;
+
+        const double depth = cam_vec.dot(camera_dir);
+        if (depth <= 0.0) continue;
+
+        const Vec3 dir = cam_vec * (1.0 / distance);
+        const double inv_denom = 1.0 / dir.dot(camera_dir);
+        const double px_dir = dir.dot(right) * inv_denom;
+        const double py_dir = dir.dot(cam_up) * inv_denom;
+
+        const double screen_x = width * ((px_dir / (aspect_ratio * scale) + 1.0) * 0.5) - 0.5;
+        const double screen_y = height * ((1.0 - py_dir / scale) * 0.5) - 0.5;
+
+        const double radius_x = (snowflake_radius / depth) * width / (2.0 * aspect_ratio * scale);
+        const double radius_y = (snowflake_radius / depth) * height / (2.0 * scale);
+
+        const int min_x = std::max(0, static_cast<int>(std::floor(screen_x - radius_x)));
+        const int max_x = std::min(width - 1, static_cast<int>(std::ceil(screen_x + radius_x)));
+        const int min_y = std::max(0, static_cast<int>(std::floor(screen_y - radius_y)));
+        const int max_y = std::min(height - 1, static_cast<int>(std::ceil(screen_y + radius_y)));
+
+        if (min_x > max_x || min_y > max_y) continue;
+
+        const int proj_index = static_cast<int>(projected_flakes.size());
+        projected_flakes.push_back({min_x, max_x, min_y, max_y, snowflakes[i]});
+        for (int y = min_y; y <= max_y; ++y) {
+            flakes_by_row[y].push_back(proj_index);
+        }
+    }
 
 	//This lambda will actually do the raytracing to compute the pixel values of a tile. 
 	//The output format is a flattened RGB array. We do it this way instead of "Color"-structs, as 
@@ -253,18 +302,20 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 
                 // SNOWFLAKE OVERLAY
                 // Overlay snowflakes as tiny white dots
-                const double snowflake_radius = 0.008;
-                const double max_ray_distance = 8.0;
+                const auto& row_flakes = flakes_by_row[y];
+                for (int flake_idx : row_flakes) {
+                    const auto& proj = projected_flakes[flake_idx];
+                    if (x < proj.min_x || x > proj.max_x) continue;
 
-                for (const auto& flake_pos : snowflakes) {
+                    const Vec3& flake_pos = proj.position;
                     Vec3 to_flake = flake_pos - ray_orig;
-                    double proj = to_flake.dot(ray_dir);
+                    double proj_len = to_flake.dot(ray_dir);
 
                     // Check if snowflake is in front of the camera, within max_ray_distance,
                     // AND not behind any other scene object (closest_t)
-                    if (proj < 0 || proj > max_ray_distance || proj > closest_t) continue;
+                    if (proj_len < 0 || proj_len > max_ray_distance || proj_len > closest_t) continue;
 
-                    Vec3 closest_point_on_ray = ray_orig + ray_dir * proj;
+                    Vec3 closest_point_on_ray = ray_orig + ray_dir * proj_len;
                     double dist_sq = (closest_point_on_ray.x - flake_pos.x)*(closest_point_on_ray.x - flake_pos.x) +
                                      (closest_point_on_ray.y - flake_pos.y)*(closest_point_on_ray.y - flake_pos.y) +
                                      (closest_point_on_ray.z - flake_pos.z)*(closest_point_on_ray.z - flake_pos.z);
@@ -289,19 +340,18 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 	enum class Tag : int { WORK = 1, RESULT = 2 };
 
     if (rank == 0) {
-		//1.: Initialize memory
-		
-		//Initialize output vector
-        out_pixels.assign(width * height, Color()); //TODO: It is standard practice to initialize memory, but on other hand this is wasted time
-		
-		//If there is only one MPI thread, this has to do all work and no communication is required
+                //1.: Initialize memory
+
+        std::vector<unsigned char> master_buffer(static_cast<size_t>(width) * height * 3);
+
+                //If there is only one MPI thread, this has to do all work and no communication is required
         if (size == 1) {
-            std::vector<unsigned char> full_buf;
-            compute_tile_flat(0, height, full_buf);
+            compute_tile_flat(0, height, master_buffer);
+            out_pixels.resize(width * height);
             for (int row = 0; row < height; ++row) {
                 for (int col = 0; col < width; ++col) {
-                    size_t idx = (row * width + col) * 3;
-                    out_pixels[row * width + col] = Color(full_buf[idx], full_buf[idx + 1], full_buf[idx + 2]);
+                    size_t idx = (static_cast<size_t>(row) * width + col) * 3;
+                    out_pixels[row * width + col] = Color(master_buffer[idx], master_buffer[idx + 1], master_buffer[idx + 2]);
                 }
             }
             return;
@@ -333,7 +383,6 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             send_work(r);
 
                 //3.: Main loop: poll for finished work from any worker before doing our own work
-        std::vector<unsigned char> recv_buf; //This will receive pixels of workers
         std::vector<unsigned char> local_buf;
         while (active_workers > 0) {
             MPI_Status status{};
@@ -349,30 +398,22 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 
                 const int start = header[0];
                 const int rows = header[1];
-                recv_buf.resize(rows * width * 3);
-                MPI_Recv(recv_buf.data(), recv_buf.size(), MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                const size_t dst_base = static_cast<size_t>(start) * width * 3;
+                MPI_Recv(master_buffer.data() + dst_base, rows * width * 3, MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
                 // Immediately dispatch more work so the worker does not idle while we copy data.
                 send_work(status.MPI_SOURCE);
 
-                for (int row = 0; row < rows; ++row) {
-                    const size_t base = static_cast<size_t>(row * width) * 3;
-                    for (int col = 0; col < width; ++col) {
-                        size_t idx = base + static_cast<size_t>(col) * 3;
-                        out_pixels[(start + row) * width + col] = Color(recv_buf[idx], recv_buf[idx + 1], recv_buf[idx + 2]);
-                    }
-                }
             }
 
-			//Do some work yourself using slightly smaller tiles to compensate for communication overhead
+                        //Do some work yourself using slightly smaller tiles to compensate for communication overhead
             if (master_tile_height > 0 && next_row < height) {
                 int rows_to_compute = std::min(master_tile_height, height - next_row);
                 compute_tile_flat(next_row, rows_to_compute, local_buf);
                 for (int row = 0; row < rows_to_compute; ++row) {
-                    for (int col = 0; col < width; ++col) {
-                        size_t idx = (static_cast<size_t>(row) * width + col) * 3;
-                        out_pixels[(next_row + row) * width + col] = Color(local_buf[idx], local_buf[idx + 1], local_buf[idx + 2]);
-                    }
+                    const size_t src_base = static_cast<size_t>(row * width) * 3;
+                    const size_t dst_base = static_cast<size_t>(next_row + row) * width * 3;
+                    std::copy_n(local_buf.data() + src_base, width * 3, master_buffer.data() + dst_base);
                 }
                 next_row += rows_to_compute;
                 continue;
@@ -383,19 +424,20 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             MPI_Recv(header, 2, MPI_INT, MPI_ANY_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, &status);
             const int start = header[0];
             const int rows = header[1];
-            recv_buf.resize(rows * width * 3);
-            MPI_Recv(recv_buf.data(), recv_buf.size(), MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            const size_t dst_base = static_cast<size_t>(start) * width * 3;
+            MPI_Recv(master_buffer.data() + dst_base, rows * width * 3, MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             send_work(status.MPI_SOURCE);
-            for (int row = 0; row < rows; ++row) {
-                const size_t base = static_cast<size_t>(row * width) * 3;
-                for (int col = 0; col < width; ++col) {
-                    size_t idx = base + static_cast<size_t>(col) * 3;
-                    out_pixels[(start + row) * width + col] = Color(recv_buf[idx], recv_buf[idx + 1], recv_buf[idx + 2]);
-                }
+        }
+
+        out_pixels.resize(width * height);
+        for (int row = 0; row < height; ++row) {
+            for (int col = 0; col < width; ++col) {
+                size_t idx = (static_cast<size_t>(row) * width + col) * 3;
+                out_pixels[row * width + col] = Color(master_buffer[idx], master_buffer[idx + 1], master_buffer[idx + 2]);
             }
         }
     } else {
-		//Worker threads
+                //Worker threads
         while (true) {
             int msg[2];
             MPI_Recv(msg, 2, MPI_INT, 0, static_cast<int>(Tag::WORK), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
