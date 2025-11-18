@@ -285,7 +285,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 
 	constexpr int tiles_per_worker = 16;
     const int tile_height = std::max(1, height / (size * tiles_per_worker));
-    const int master_tile_height = std::max(1, tile_height / 2); // Rank 0 uses smaller tiles to offset communication overhead
+    const int master_tile_height = tile_height / 16; // Rank 0 uses smaller tiles to offset communication overhead
 	enum class Tag : int { WORK = 1, RESULT = 2 };
 
     if (rank == 0) {

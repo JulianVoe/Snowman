@@ -16,6 +16,8 @@
  - As I said, we can run "instrument.sh" and then use CubeGui and Vampir
 
 ### Results
-What the first performance test seems to suggest: the worker size should be either all / (#threads * 8) or all / (#threads * 16) and the root process should have something between 1/4 and 1/16 of that tilesize.
+ - results1: What the first performance test seems to suggest: the worker size should be either all / (#threads * 8) or all / (#threads * 16) and the root process should have something between 1/4 and 1/16 of that tilesize.
 
-We should retest that and also add 1/8 as an options. These will yield 6 different combinations.
+   We should retest that and also add 1/8 as an options. These will yield 6 different combinations.
+
+   Note that the "failed" runs happened when SLURM retired the worker thread.
