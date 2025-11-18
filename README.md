@@ -1,22 +1,16 @@
 # SNOWMAN
 
-This raytracer project is currently under active development.
-Functionality and output may change frequently.
+### Building
+ - Scripts will do this for you
+ - Manually: make (also "make instr" for instrumented build with Score-P and "make instr-only" for a more bare-bone instrumented version)
 
-It is designed for **educational purposes**, specifically for teaching concepts in **High Performance Computing (HPC)**.
+### Running
+ - timing.sh: Runs strong and weak scaling study and Linaroforge as in exercise 01
+ - reduced-timings.sh: Runs smaller strong and weak scaling study. No Linaroforge.
+ - instrument.sh: Runs Score-P. First time: will do profiling run first. This can be viewed with "CubeGui". Only counts, no timeline. This is used to compute a filter (and theoretically expected memory usage, but currently we just always set memory to 512mb). Then we do a tracing run. The output can be viewed in Vampir.
 
-### Contact
-If you encounter issues or have suggestions, feel free to reach out:
+"timings.sh" and "reduced-timings.sh" can have multiple versions running in parallel, since they copy the binary to the working directory. "instrument.sh" cannot have different versions running in parallel.
 
-**Email:** kmanda@uni-bonn.de
-
-### Build Instructions:
-- module load GCC/13.3.0 OpenMPI/5.0.3-GCC-13.3.0
-- make
-
-### Run
-- mpirun -np 4 snowman 800 3
-- The above command uses 4 processes and image size of 800 * 800 pixels with 3 snowmen in the snowfall.
-
-### Acknowledgements
-This project's foundational ray tracing algorithms, including ray-sphere intersection, basic camera setup, and image output, are significantly inspired by the "Ray Tracing in One Weekend" book series. This invaluable educational resource is freely available under the CC0 license, encouraging broad use and adaptation. https://raytracing.github.io/
+### Plotting data
+ - For timing data: use "plot-reduced.py" to generate plots
+ - As I said, we can run "instrument.sh" and then use CubeGui and Vampir
