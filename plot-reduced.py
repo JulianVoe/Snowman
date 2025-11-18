@@ -5,7 +5,6 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-
 def load_curve(csv_path: Path):
     xs, ys = [], []
     with csv_path.open(newline="") as f:
@@ -42,7 +41,9 @@ def main():
     fig_weak, ax_weak = plt.subplots()
 
     # iterate over immediate subdirectories of datadir
-    for subdir in sorted(p for p in datadir.iterdir() if p.is_dir()):
+    cmap = plt.colormaps.get_cmap("tab20c")
+    for i, subdir in enumerate(sorted(p for p in datadir.iterdir() if p.is_dir())):
+        color = cmap(i)
         strong_csv = subdir / "strong_scaling.csv"
         weak_csv = subdir / "weak_scaling.csv"
         cfg_txt = subdir / "config.txt"
@@ -56,10 +57,10 @@ def main():
         xs_w, ys_w = load_curve(weak_csv)
 
         if xs_s:  # only plot if we actually have data
-            ax_strong.plot(xs_s, ys_s, marker="o", linewidth=0.8, markersize=3, label=label)
+            ax_strong.plot(xs_s, ys_s, marker="o", linewidth=0.8, markersize=3, color=color, label=label)
 
         if xs_w:  # same for weak scaling
-            ax_weak.plot(xs_w, ys_w, marker="o", linewidth=0.8, markersize=3, label=label)
+            ax_weak.plot(xs_w, ys_w, marker="o", linewidth=0.8, markersize=3, color=color, label=label)
 
     # strong scaling figure
     ax_strong.set_xlabel("workers")
