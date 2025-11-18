@@ -283,10 +283,10 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
         }
     };
 
-        constexpr int tiles_per_worker = 4;
+	constexpr int tiles_per_worker = 16;
     const int tile_height = std::max(1, height / (size * tiles_per_worker));
     const int master_tile_height = std::max(1, tile_height / 2); // Rank 0 uses smaller tiles to offset communication overhead
-        enum class Tag : int { WORK = 1, RESULT = 2 };
+	enum class Tag : int { WORK = 1, RESULT = 2 };
 
     if (rank == 0) {
 		//1.: Initialize memory
@@ -364,8 +364,8 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                 }
             }
 
-                        //Do some work yourself using slightly smaller tiles to compensate for communication overhead
-            if (next_row < height) {
+			//Do some work yourself using slightly smaller tiles to compensate for communication overhead
+            if (master_tile_height > 0 && next_row < height) {
                 int rows_to_compute = std::min(master_tile_height, height - next_row);
                 compute_tile_flat(next_row, rows_to_compute, local_buf);
                 for (int row = 0; row < rows_to_compute; ++row) {
