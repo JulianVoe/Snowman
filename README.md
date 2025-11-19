@@ -12,8 +12,9 @@
 "timings.sh" and "reduced-timings.sh" can have multiple versions running in parallel, since they copy the binary to the working directory. "instrument.sh" cannot have different versions running in parallel.
 
 ### Plotting data
- - For timing data: use "plot-reduced.py" to generate plots
+ - For timing data (both reduced and not): use "plot-reduced.py" to generate plots
  - As I said, we can run "instrument.sh" and then use CubeGui and Vampir
+ - For full timing data one can also use the old "analyze-scaling.py" and "plot-performance.py" but this is very much recommended against
 
 ### Results
  - results1: What the first performance test seems to suggest: the worker size should be either all / (#threads * 8) or all / (#threads * 16) and the root process should have something between 1/4 and 1/16 of that tilesize.
@@ -21,3 +22,7 @@
    We should retest that and also add 1/8 as an options. These will yield 6 different combinations.
 
    Note that the "failed" runs happened when SLURM retired the worker thread.
+
+Also, it seems like we have a 5% performance regression on a single thread, even though there is no MPI communication. Also, we should be doing less copying of data. It also should matter that we introduced a lambda. The only thing that I can think of is the change of some 32bit arithmetic to 64bit with the additional "static_cast". Will use perf to figure out what is happening. It should be easy enough to get rid of this regression.
+
+Perf fucking wrote 22GB of data - per run... So almost 45GB in total. I cannot push that...

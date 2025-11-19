@@ -93,6 +93,7 @@ done
 # ---------- build: make instr ----------
 
 echo "==> Running 'make instr' ..."
+make clean
 make instr
 
 if [[ ! -x "$APP" ]]; then

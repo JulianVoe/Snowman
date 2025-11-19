@@ -131,8 +131,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 	//The output format is a flattened RGB array. We do it this way instead of "Color"-structs, as 
 	//this format allows direct sending/receiving using MPI and thus gets rid of the unnecessary 
 	//conversion inbetween
-    auto compute_tile_flat = [&](int start_row, int row_count, std::vector<unsigned char>& buffer) {
-        buffer.resize(row_count * width * 3);
+	auto compute_tile_flat = [&](int start_row, int row_count, unsigned char* buffer) {
         for (int y = start_row; y < start_row + row_count; ++y) {
             for (int x = 0; x < width; ++x) {
                 double ndc_x = (x + 0.5) / width;
@@ -283,25 +282,23 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
         }
     };
 
-	constexpr int tiles_per_worker = 16;
+	constexpr int tiles_per_worker = 8;
     const int tile_height = std::max(1, height / (size * tiles_per_worker));
-    const int master_tile_height = tile_height / 16; // Rank 0 uses smaller tiles to offset communication overhead
+    const int master_tile_height = tile_height / 8; // Rank 0 uses smaller tiles to offset communication overhead
 	enum class Tag : int { WORK = 1, RESULT = 2 };
 
     if (rank == 0) {
-		//1.: Initialize memory
-		
-		//Initialize output vector
-        out_pixels.assign(width * height, Color()); //TODO: It is standard practice to initialize memory, but on other hand this is wasted time
-		
-		//If there is only one MPI thread, this has to do all work and no communication is required
+		//Initialize memory
+		std::vector<unsigned char> master_buffer(static_cast<size_t>(width) * height * 3);
+
+		//1.: If there is only one MPI thread, this has to do all work and no communication is required
         if (size == 1) {
-            std::vector<unsigned char> full_buf;
-            compute_tile_flat(0, height, full_buf);
+			compute_tile_flat(0, height, master_buffer.data());
+			out_pixels.resize(width * height);
             for (int row = 0; row < height; ++row) {
                 for (int col = 0; col < width; ++col) {
-                    size_t idx = (row * width + col) * 3;
-                    out_pixels[row * width + col] = Color(full_buf[idx], full_buf[idx + 1], full_buf[idx + 2]);
+					size_t idx = (static_cast<size_t>(row) * width + col) * 3;
+					out_pixels[row * width + col] = Color(master_buffer[idx], master_buffer[idx + 1], master_buffer[idx + 2]);
                 }
             }
             return;
@@ -332,9 +329,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
         for (int r = 1; r <= active_workers; ++r)
             send_work(r);
 
-                //3.: Main loop: poll for finished work from any worker before doing our own work
-        std::vector<unsigned char> recv_buf; //This will receive pixels of workers
-        std::vector<unsigned char> local_buf;
+		//3.: Main loop: poll for finished work from any worker before doing our own work
         while (active_workers > 0) {
             MPI_Status status{};
             int flag = 0;
@@ -349,31 +344,16 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 
                 const int start = header[0];
                 const int rows = header[1];
-                recv_buf.resize(rows * width * 3);
-                MPI_Recv(recv_buf.data(), recv_buf.size(), MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				MPI_Recv(master_buffer.data() + static_cast<size_t>(start) * width * 3, static_cast<size_t>(rows) * width * 3, MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-                // Immediately dispatch more work so the worker does not idle while we copy data.
+                // Distribute new tile to worker (if still possible)
                 send_work(status.MPI_SOURCE);
-
-                for (int row = 0; row < rows; ++row) {
-                    const size_t base = static_cast<size_t>(row * width) * 3;
-                    for (int col = 0; col < width; ++col) {
-                        size_t idx = base + static_cast<size_t>(col) * 3;
-                        out_pixels[(start + row) * width + col] = Color(recv_buf[idx], recv_buf[idx + 1], recv_buf[idx + 2]);
-                    }
-                }
             }
 
 			//Do some work yourself using slightly smaller tiles to compensate for communication overhead
             if (master_tile_height > 0 && next_row < height) {
                 int rows_to_compute = std::min(master_tile_height, height - next_row);
-                compute_tile_flat(next_row, rows_to_compute, local_buf);
-                for (int row = 0; row < rows_to_compute; ++row) {
-                    for (int col = 0; col < width; ++col) {
-                        size_t idx = (static_cast<size_t>(row) * width + col) * 3;
-                        out_pixels[(next_row + row) * width + col] = Color(local_buf[idx], local_buf[idx + 1], local_buf[idx + 2]);
-                    }
-                }
+                compute_tile_flat(next_row, rows_to_compute, master_buffer.data() + static_cast<size_t>(next_row) * width * 3);
                 next_row += rows_to_compute;
                 continue;
             }
@@ -383,19 +363,20 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             MPI_Recv(header, 2, MPI_INT, MPI_ANY_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, &status);
             const int start = header[0];
             const int rows = header[1];
-            recv_buf.resize(rows * width * 3);
-            MPI_Recv(recv_buf.data(), recv_buf.size(), MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(master_buffer.data() + static_cast<size_t>(start) * width * 3, rows * width * 3, MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             send_work(status.MPI_SOURCE);
-            for (int row = 0; row < rows; ++row) {
-                const size_t base = static_cast<size_t>(row * width) * 3;
-                for (int col = 0; col < width; ++col) {
-                    size_t idx = base + static_cast<size_t>(col) * 3;
-                    out_pixels[(start + row) * width + col] = Color(recv_buf[idx], recv_buf[idx + 1], recv_buf[idx + 2]);
-                }
+        }
+
+		out_pixels.resize(static_cast<size_t>(width) * height);
+        for (int row = 0; row < height; ++row) {
+            for (int col = 0; col < width; ++col) {
+                size_t idx = (static_cast<size_t>(row) * width + col) * 3;
+                out_pixels[static_cast<size_t>(row) * width + col] = Color(master_buffer[idx], master_buffer[idx + 1], master_buffer[idx + 2]);
             }
         }
     } else {
 		//Worker threads
+		std::vector<unsigned char> local_buf;
         while (true) {
             int msg[2];
             MPI_Recv(msg, 2, MPI_INT, 0, static_cast<int>(Tag::WORK), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
@@ -403,12 +384,12 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             int rows = msg[1];
             if (start < 0 || rows <= 0) break;
 
-            std::vector<unsigned char> send_buf;
-            compute_tile_flat(start, rows, send_buf);
+            local_buf.resize(static_cast<size_t>(rows) * width * 3);
+            compute_tile_flat(start, rows, local_buf.data());
 
             int header[2] = {start, rows};
             MPI_Send(header, 2, MPI_INT, 0, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD);
-            MPI_Send(send_buf.data(), send_buf.size(), MPI_UNSIGNED_CHAR, 0, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD);
+            MPI_Send(local_buf.data(), local_buf.size(), MPI_UNSIGNED_CHAR, 0, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD);
         }
         out_pixels.clear(); //TODO: This seems unnecessary
     }
