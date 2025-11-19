@@ -1,0 +1,57 @@
+The rendering of snowflakes is a bit weird: we say a ray intersects it if its distance to the ray is smaller than a fixed length. This is as if the shape of the snowflake was a sphere with that radius. But the "distance" is then calculated slightly differently: it is taken to the point on the ray that is the closest to the center of the ray. This is notably not the point where the ray would intersect the sphere, but slightly bigger (but really just slightly). Maybe insert a 2D graphics that shows this.
+
+But if we only care for to which pixels a snowflake is potentially rendered, we can assume it is a sphere (for the z-distance and occlusions we cannot, however, since the render is wonky as described above and gets the math slightly wrong). How does the projection onto screenspace of a sphere look? There is a viewing-cone with point being the camera and all rays tangent to the circle. This is a symmetric cone. The viewing plane than slices this. Thus math tells us that the projection is a conic section which always is an ellipse except for the case where the center of the snowflake is directly in front of the camera (i.e. in the view direction).
+
+So if we want to find out the coordinates snowflakes, we have to look at what the renderer does exactly. Looking at the code and understanding the math shows the following: first, we indeed do a projection onto a "virtual" screen place which is the place perpendicular to the (normalized) camera_view vector. Then we linearly change its coordinates so they start from 0 and take aspect ratio as well as fov into account. This second step is simple. We really have to understand the bounding box of the ellipse that the projection of the sphere onto the virtual camera plane yields.
+
+But this is simple projective geometry now. Let's say the camera position is $c\in \R^3$ with view vector $cam_dir\in \R^3$. The camera plane is then the one polar to this. The snowflake has center $o\in \R^3$ and radius $r\in \R$. First we transform this into the camera basis:
+
+The camera is at (0,0,0) and the view is (0,0,1). Then the sphere is at \tilde{o} = (<o_x-c_x, cam_right>, <o_y-c_y, cam_up>, <o_y-c_y, cam_dir>). We later transform back. Since this is the linear transformation that sends the orthonormal basis $cam_right, cam_up, cam_dir$ to $(1,0,0); (0,1,0); (0,0,1)$. Since cam_* are all normalized, this transformation is orthonormal and in particular preserves the radius $r\in \R$. So now we want to find the projection of the sphere with center \tilde{o} and radius $r$ onto the plane with z=1 w.r.t. to (0,0,0). As an orthonormal transformation and even more explicitly, a rotation, this doesn't change the virtual-screen-space-coordinates.
+
+The points on the sphere are (x,y,z) with $(x-\tilde{o}_x)^2 + (y-\tilde{o}_y)^2 + (z - \tilde{o}_z)^2 = r^2$. For such a point we get the ray $ray(t) = t * (x,y,z)$. It intercepts the plane for $t = 1/z$, yielding point $(x/z, y/z, 1)$. Thus virtual-screen-coordinate (x/z, y/z). Working this out in general is not good: this is because this will not only yield the points on the boundary of the ellipse but also all in the middle of course. This does not have the nicest mathematical description. Since we only case about the bounding box, we can however instead look only at the boundary of the ellipse. This is the projection of the view-cone. 
+
+So we need to find the view cone. This is tough: the base doesn't go through the midpoint of the sphere or anything. But we can setup an equation: the viewing ray through virtual-screen-coordinate (x,y) has equation ray(t) = r * (x,y,1). Then (x,y) is on the boundary of the ellipse in screen space iff the ray is perpendicular to the circle. This means that the distance of the midpoint \tilde{o} to the ray is r. This has equation $r^2 = || \tilde{o} - <(x,y,1)/sqrt(x^2+y^2+1), \tilde{o}> * (x,y,1)/(x^2+y^2+1) ||^2 = ||\tilde{o} - (<(x,y,1), \tilde{o}> * (x,y,z)) / (x^2+y^2+1)||^2 where is just write $o$ instead of $\tilde{o}$ for convenience. We could work this out directly, but I thought of an easier way to find the squared norm on the right: look at the plane spanned by the ray and the center of the square. In there we find the triangle of the camera at (0,0,0), the midpoint of the snowflake-sphere at \tilde{o} and its footpoint on the ray with coordinates (<(x,y,1), \tilde{o}> * (x,y,z)) / (x^2+y^2+1). The squared norm is now the length of the side of this triangle between the last to points. But this triangle is a right triangle at the footpoint as the footpoint is, well, a footpoint. Thus we can apply the Pythagorean theorem and see that the squared norm is indeed also ||\tilde{o}||^2 - ||(<(x,y,1), \tilde{o}> * (x,y,z)) / (x^2+y^2+1)||^2. The second term is nice: first of all, we can pull out constants of the norm to see that this is: ||\tilde{o}||^2 - (<(x,y,1), \tilde{o}> / (x^2+y^2+1))^2 * ||(x,y,z)||^2 = ||\tilde{o}||^2 - (<(x,y,1), \tilde{o}> / (x^2+y^2+1))^2 * (x^2+y^2+1) = ||\tilde{o}||^2 - (<(x,y,1), \tilde{o}>)^2 / (x^2+y^2+1). Now we can rearange this to: ||\tilde{o}||^2 - r^2 = <(x,y,1), \tilde{o}>^2 / (x^2+y^2+1) = (x * \tilde{o}_1 + y * \tilde{o}_2 + \tilde{o}_3)^2 / (x^2+y^2+1). Note: this is just 3d power-of-a-point (which we see by looking at the same plane as for the pythagorean theorem again), so we could have gotten this way easier by invoking that theory. We could now multiply by (x^2+y^2+1), plug in the values for \tilde{o}_i and then compute bounding boxes. That sounds rough though. Let's hope there is a smarter way to get bounding boxes from this already.
+
+First of all, note again that we did an orthonormal transformation, so ||\tilde{o}||^2 = ||o||^2. Then the whole thing rearanges as described above to \[
+	0 = x^2 (o_1^2 - ||o||^2 + r^2) + y^2 (o_2^3 - ||o||^2 + r^2) + xy (2o_1 o_2) + x (2 o_1 o_3) + y (2 o_2 o_3) + ( o_3^2 - ||o||^2 + r^2)
+\]
+This is the ellipse equation we wanted. So how do we find a bounding square? Well, the bounding values for x are those for that the resulting equation in y has exactly one solution. That means the discriminant of the equation as a quadratic in y must be 0. To find this discriminant, we first rewrite the equation in terms of y: \[
+	0 = y^2 (o_2^2 - ||o||^2 + r^2)  + y (2 x o_1 o_2 + 2 o_2 o_3) + (x^2 (o_1^2 - ||o||^2 + r^2) + x (2 o_1 o_3) + ( o_3^2 - ||o||^2 + r^2))
+\]
+This has discriminant: \[
+	(2 x o_1 o_2 + 2 o_2 o_3)^2 - 4 * (o_2^2 - ||o||^2 + r^2) * (x^2 (o_1^2 - ||o||^2 + r^2) + x (2 o_1 o_3) + ( o_3^2 - ||o||^2 + r^2))
+\]
+So the bounding values are exactly those values of x for which this vanishes.
+
+Using Wolfram Alpha for this: 
+	(2 * x * o_1 * o_2 + 2 * o_2 * o_3)^2 - 4 * (o_2^2 - (o_1^2 + o_2^2 + o_3^2) + r^2) * (x^2 * (o_1^2 - (o_1^2+o_2^2+o_3^2) + r^2) + x * (2 * o_1*o_3) + (o_3^2 - (o_1^2+o_2^2+o_3^2) + r^2)) = 0
+yields the stunningly simple solution \[
+	x = (-o_1 o_3 \pm \sqrt{o_1^2 r^2 + o_3^2 r^2 - r^4}) / (r^2 - o_3^2)
+\]
+This means the equation must simplify a lot, but I don't wanna do this by hand.
+
+\href{https://www.wolframalpha.com/input?i=0%3D%282+*+x+*+o_1+*+o_2+%2B+2+*+o_2+*+o_3%29%5E2+-+4+*+%28o_2%5E2+-+%28o_1%5E2+%2B+o_2%5E2+%2B+o_3%5E2%29+%2B+r%5E2%29+*+%28x%5E2+*+%28o_1%5E2+-+%28o_1%5E2%2Bo_2%5E2%2Bo_3%5E2%29+%2B+r%5E2%29+%2B+x+*+%282+*+o_1*o_3%29+%2B+%28o_3%5E2+-+%28o_1%5E2%2Bo_2%5E2%2Bo_3%5E2%29+%2B+r%5E2%29%29}{See for yourself}
+
+
+Since the general equation is invariant under swapping x with y and at the same time swapping o_1 with o_2, the same must hold for the formula for the bounding values. Thus the bounding values for y are:  \[
+	y = (-o_2 o_3 \pm \sqrt{o_2^2 r^2 + o_3^2 r^2 - r^4}) / (r^2 - o_3^2)
+\]
+
+Cool, so we found the bounding box in the virtual screen space. This is then actually transformed into our x and y. I.e. we need the inverse transformation of 
+
+double ndc_x = (x + 0.5) / width;
+double ndc_y = (y + 0.5) / height;
+double px = (2 * ndc_x - 1) * aspect_ratio * scale;
+double py = (1 - 2 * ndc_y) * scale;
+
+The inverse transformations are: 
+x = px * (width / (2 * aspect_ratio * scale)) + (width - 1) / 2
+y = py * (width / (2 * scale)) + (height - 1) / 2
+
+So applying this to the result above, our final bounding box is: 
+	x = (-o_1 o_3 \pm \sqrt{o_1^2 r^2 + o_3^2 r^2 - r^4}) / (r^2 - o_3^2) * (width / (2 * aspect_ratio * scale)) + (width - 1) / 2
+	y = (-o_2 o_3 \pm \sqrt{o_2^2 r^2 + o_3^2 r^2 - r^4}) / (r^2 - o_3^2) * (width / (2 * scale)) + (height - 1) / 2
+
+In the code we then round outwards for numeric stability.
+
+Now that we have bounding boxes for all the snowflakes, we can create a datastructure that holds all snowflakes that could possibly need to be rendered in a row. It also holds info for the columns where it could possibly be rendered. We should also sort by that.

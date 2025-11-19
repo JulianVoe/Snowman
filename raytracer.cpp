@@ -282,9 +282,9 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
         }
     };
 
-	constexpr int tiles_per_worker = 8;
+	const int tiles_per_worker = [&](){ if (size < 32) { return 8; } return 16; }();
     const int tile_height = std::max(1, height / (size * tiles_per_worker));
-    const int master_tile_height = tile_height / 8; // Rank 0 uses smaller tiles to offset communication overhead
+    const int master_tile_height = [&](){ if (size < 32) { return tile_height / 16; } return tile_height / 4; }(); // Rank 0 uses smaller tiles to offset communication overhead
 	enum class Tag : int { WORK = 1, RESULT = 2 };
 
     if (rank == 0) {

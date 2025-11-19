@@ -2,7 +2,6 @@
 *.o
 *.out
 *.ppm
-*.txt
 *.html
 *.csv
 *.data

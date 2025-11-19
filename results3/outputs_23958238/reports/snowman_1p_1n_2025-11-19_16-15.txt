@@ -1,0 +1,75 @@
+Command:        mpirun -n 1 outputs_23958238/snowman 1024 4
+Resources:      1 node (96 physical, 96 logical cores per node)
+Memory:         1008 GiB per node
+Tasks:          1 process
+Machine:        node103
+Architecture:   x86_64
+CPU Family:     sapphirerapids
+Start time:     Wed Nov 19 16:15:13 2025
+Total time:     692 seconds (about 12 minutes)
+Full path:      /home/s6jnvoel_hpc/own/Snowman/outputs_23958238
+
+Summary: snowman is Compute-bound in this configuration
+Compute:                                    100.0%   (691.4s) |=========|
+MPI:                                          0.0%     (0.0s) |
+I/O:                                          0.0%     (0.0s) |
+This application run was Compute-bound (based on main thread activity). A breakdown of this time and advice for investigating further is in the CPU section below.
+As very little time is spent in MPI calls, this code may also benefit from running at larger scales.
+
+CPU:
+A breakdown of the 100.0% (691.4s) CPU time:
+Scalar numeric ops:                          52.4%   (362.3s) |====|
+Vector numeric ops:                           0.0%     (0.0s) |
+Memory accesses:                             31.6%   (218.5s) |==|
+The per-core performance is arithmetic-bound. Try to increase the amount of time spent in vectorized instructions by analyzing the compiler's vectorization reports.
+
+MPI:
+A breakdown of the 0.0% (0.0s) MPI time:
+Time in collective calls:                     0.0%     (0.0s) |
+Time in point-to-point calls:                 0.0%     (0.0s) |
+Effective process collective rate:            0.00 bytes/s
+Effective process point-to-point rate:        0.00 bytes/s
+No time is spent in MPI operations. There's nothing to optimize here!
+
+I/O:
+A breakdown of the 0.0% (0.0s) I/O time:
+Time in reads:                                0.0%     (0.0s) |
+Time in writes:                               0.0%     (0.0s) |
+Effective process read rate:                  0.00 bytes/s
+Effective process write rate:                 0.00 bytes/s
+No time is spent in I/O operations. There's nothing to optimize here!
+
+Threads:
+A breakdown of how multiple threads were used:
+Computation:                                100.0% (69136.8s) |=========|
+Synchronization:                              0.0%     (0.0s) |
+Physical core utilization:                    1.0%            ||
+System load:                                  1.1%            ||
+Physical core utilization is low. Try increasing the number of threads or processes to improve performance.
+
+Memory:
+Per-process memory usage may also affect scaling:
+Mean process memory usage:                     187 MiB
+Peak process memory usage:                     187 MiB
+Peak node memory usage:                       0.0%            |
+Node memory usage metrics:
+
+Energy:
+A breakdown of how energy was used:
+CPU:                                      not supported
+System:                                   not supported
+Mean node power:                          not supported
+Peak node power:                              0.00 W
+Energy metrics are not available on this system.
+CPU metrics: Error reading /sys/class/powercap/intel-rapl:0/energy_uj: Permission denied
+
+Thread Affinity:
+A breakdown of how software threads have been pinned to logical cores (1 per physical core).
+Mean utilization:                             1.0%            ||
+Max load:                                     2.00 
+Migration opportunity:                        1.00 
+[ERROR] detected compute threads with overlapping affinity masks
+[ERROR] cores are oversubscribed
+[INFORMATION] if possible consider improving node utilization by running 8 processes per node (1 process per NUMANode).
+Consult Linaro MAP's Thread Affinity Advisor dialog for more details.
+
