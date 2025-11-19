@@ -5,7 +5,8 @@
 *.txt
 *.html
 *.csv
-*.png
+*.data
+
 
 #Executables
 snowman
