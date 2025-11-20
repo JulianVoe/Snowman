@@ -1,0 +1,32 @@
+# Initial filter file, starting point for further adaptation.
+#
+# Considerations:
+#  - check possible wildcard options
+#  - check selected functions for relevancy
+#    (w.r.t. your knowledge of the application)
+#
+# Generated with the following parameters:
+#  - A region has to use at least 1% of the estimated trace buffer.
+#  - A region has to have a time/visits value of less than 1 us.
+#  - A region that is of type USR.
+#
+# The file contains comments for each region providing additional information
+# regarding the respective region.
+# The entries are sorted by `maxbuffer`.
+# The common prefix for the files is:
+# '/home/julian/Uni/Semester9/HPC-lab/old/Snowman/'
+#
+# Please refer to the Score-P user guide for more options on filtering.
+SCOREP_REGION_NAMES_BEGIN
+  EXCLUDE
+    # type=USR max_buf=276,824,064 visits=77,965,324, time=  10.00s (  0.7%), time/visit=    0.13us
+    # name='bool RayTracer::intersect_sphere(const Vec3&, const Vec3&, const Sphere&, double&)'
+    # file='raytracer.cpp'
+    MANGLED _ZN9RayTracer16intersect_sphereERK4Vec3S2_RK6SphereRd
+
+    # type=USR max_buf=  4,005,168 visits= 1,115,570, time=   0.20s (  0.0%), time/visit=    0.18us
+    # name='bool RayTracer::intersect_plane(const Vec3&, const Vec3&, const Plane&, double&)'
+    # file='raytracer.cpp'
+    MANGLED _ZN9RayTracer15intersect_planeERK4Vec3S2_RK5PlaneRd
+
+SCOREP_REGION_NAMES_END
