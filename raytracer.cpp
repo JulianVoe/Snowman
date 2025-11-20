@@ -196,6 +196,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 	auto compute_tile_flat = [&](int start_row, int row_count, unsigned char* buffer) {
         for (int y = start_row; y < start_row + row_count; ++y) {
             for (int x = 0; x < width; ++x) {
+				//Theoretically, we could pull computation of py out of this loop and precompute the px and store them. Perf shows that this uses up basically no runtime anyways, so let's keep it this way for readability sake
                 double ndc_x = (x + 0.5) / width;
                 double ndc_y = (y + 0.5) / height;
                 double px = (2 * ndc_x - 1) * aspect_ratio * scale;
