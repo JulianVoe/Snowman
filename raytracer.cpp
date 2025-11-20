@@ -29,27 +29,35 @@ void RayTracer::set_scene(Scene* s) {
     scene = s;
 }
 
+template<bool ray_dir_normalized>
 bool RayTracer::intersect_sphere(const Vec3& ray_orig, const Vec3& ray_dir,
                                  const Sphere& sphere, double& t) {
+	//Ideas left to optimize this:
+	// - Spheres store squared radius
+	// - Manual vectorization (either with std::array<Sphere, 4> or directly with intrinsics)
+
     Vec3 oc = ray_orig - sphere.center;
-    double a = ray_dir.dot(ray_dir);
-    double b = 2.0 * oc.dot(ray_dir);
+
+    double half_b = oc.dot(ray_dir);
     double c = oc.dot(oc) - sphere.radius * sphere.radius;
-    double discriminant = b*b - 4*a*c;
 
-    if (discriminant < 0) return false;
+    if (half_b * half_b < c) return false; //This really is discriminant < 0
+    double sqrt_disc = std::sqrt(half_b * half_b - c);
+	
+	double t_near = -half_b - sqrt_disc;
+	double t_far  = -half_b + sqrt_disc;
+	if constexpr (!ray_dir_normalized) {
+		double inv_a = 1.0 / ray_dir.dot(ray_dir);
+		t_near *= inv_a;
+		t_far  *= inv_a;
+	}
 
-    double sqrt_disc = std::sqrt(discriminant);
-    double t0 = (-b - sqrt_disc) / (2*a);
-    double t1 = (-b + sqrt_disc) / (2*a);
-
-    if (t0 > 1e-4) {
-        t = t0;
-        return true;
-    } else if (t1 > 1e-4) {
-        t = t1;
+	double t_candidate = (t_near > 1e-4) ? t_near : t_far;
+    if (t_candidate > 1e-4) {
+        t = t_candidate;
         return true;
     }
+
     return false;
 }
 
@@ -115,9 +123,9 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 		int x_max;
 		Vec3 snowflake;
 
-		bool operator<(const BoundedSnowflake& other) {
-			return x_min < other.x_min;
-		}
+		BoundedSnowflake(int x_min_, int x_max_, const Vec3& snowflake_) :
+			x_min(x_min_), x_max(x_max_), snowflake(snowflake_)
+		{}
 	};
 	std::vector<std::vector<BoundedSnowflake>> snowflakes(height);
 
@@ -175,10 +183,11 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 	}
 	
 	//TODO: Test the following and data oriented: split snowflakes into three vectors
-#if 0
-	for(int row = 0; row != width; ++row)
-		std::sort(snowflakes[row].begin(), snowflakes[row].end());
-#endif
+	for (auto& row : snowflakes) {
+ 		std::sort(row.begin(), row.end(), [](const BoundedSnowflake& a, const BoundedSnowflake& b) {
+			return a.x_min < b.x_min;
+		});
+	}
 
 	//This lambda will actually do the raytracing to compute the pixel values of a tile. 
 	//The output format is a flattened RGB array. We do it this way instead of "Color"-structs, as 
@@ -202,7 +211,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                 // Find closest sphere hit
                 for (const auto& sphere : scene->spheres) {
                     double t;
-                    if (intersect_sphere(ray_orig, ray_dir, sphere, t) && t < closest_t) {
+                    if (intersect_sphere<true>(ray_orig, ray_dir, sphere, t) && t < closest_t) {
                         closest_t = t;
                         hit_sphere = &sphere;
                         hit_plane = nullptr;
@@ -231,7 +240,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                     Vec3 shadow_dir = -sunlight_dir;
                     for (const auto& s : scene->spheres) {
                         double t_shadow;
-                        if (&s != hit_sphere && intersect_sphere(shadow_origin, shadow_dir, s, t_shadow)) {
+                        if (&s != hit_sphere && intersect_sphere<true>(shadow_origin, shadow_dir, s, t_shadow)) {
                             if (t_shadow > 1e-4) {
                                 in_shadow = true;
                                 break;
@@ -264,7 +273,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                     Vec3 shadow_dir = -sunlight_dir;
                     for (const auto& s : scene->spheres) {
                         double t_shadow;
-                        if (intersect_sphere(shadow_origin, shadow_dir, s, t_shadow)) {
+                        if (intersect_sphere<true>(shadow_origin, shadow_dir, s, t_shadow)) {
                             if (t_shadow > 1e-4) {
                                 in_shadow = true;
                                 break;
@@ -306,7 +315,9 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                 // SNOWFLAKE OVERLAY
                 // Overlay snowflakes as tiny white dots
                 for (const auto& [x_min, x_max, flake_pos] : snowflakes[y]) {
-					if (x < x_min || x > x_max)
+					if (x < x_min)
+						break;
+		  			if (x > x_max)
 						continue;
 
                     Vec3 to_flake = flake_pos - ray_orig;

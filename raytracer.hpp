@@ -21,6 +21,7 @@ private:
     int width, height;
     Scene* scene;
 
+	template<bool ray_dir_normalized>
     bool intersect_sphere(const Vec3& ray_orig, const Vec3& ray_dir,
                           const Sphere& sphere, double& t);
     bool intersect_plane(const Vec3& ray_orig, const Vec3& ray_dir,
