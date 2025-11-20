@@ -46,7 +46,7 @@ double py = (1 - 2 * ndc_y) * scale;
 
 The inverse transformations are: 
 x = px * (width / (2 * aspect_ratio * scale)) + (width - 1) / 2
-y = py * (width / (2 * scale)) + (height - 1) / 2
+y = py * (-height / (2 * scale)) + (height - 1) / 2
 
 So applying this to the result above, our final bounding box is: 
 	x = (-o_1 o_3 \pm \sqrt{o_1^2 r^2 + o_3^2 r^2 - r^4}) / (r^2 - o_3^2) * (width / (2 * aspect_ratio * scale)) + (width - 1) / 2

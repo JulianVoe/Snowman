@@ -19,6 +19,9 @@
 #include <random>
 #include <cmath>
 #include <mpi.h>
+#include <algorithm>
+
+#include <iostream>
 
 RayTracer::RayTracer(int w, int h) : width(w), height(h), scene(nullptr) {}
 
@@ -104,28 +107,78 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 	//   this is negligent. Second of all, we do introduce one more broadcast, but get rid of any load
 	//   imbalances due to some threads being faster at computing the snowflakes array.
     const int snowflake_count = 75000;
-    std::vector<Vec3> snowflakes(snowflake_count);
-    if (rank == 0) {
-        std::mt19937 rng(12345);
-        std::normal_distribution<double> dist_xz(0.0, 6.0);
-        std::uniform_real_distribution<double> dist_y(-1.0, 25.0);
+	const double snowflake_radius = 0.008;
+	const double max_ray_distance = 8.0;
 
-        for (int i = 0; i < snowflake_count; ++i) {
-            double x_rand = dist_xz(rng);
-            double y_rand = dist_y(rng);
-            double z_rand = dist_xz(rng);
+	struct BoundedSnowflake {
+		int x_min;
+		int x_max;
+		Vec3 snowflake;
 
-            // Clamping bounds: covering a wide, deep area
-            if (x_rand < -25.0) x_rand = -25.0;
-            else if (x_rand > 25.0) x_rand = 25.0;
+		bool operator<(const BoundedSnowflake& other) {
+			return x_min < other.x_min;
+		}
+	};
+	std::vector<std::vector<BoundedSnowflake>> snowflakes(height);
 
-            if (z_rand < -25.0) z_rand = -25.0;
-            else if (z_rand > 25.0) z_rand = 25.0;
+	std::mt19937 rng(12345);
+	std::normal_distribution<double> dist_xz(0.0, 6.0);
+	std::uniform_real_distribution<double> dist_y(-1.0, 25.0);
 
-            snowflakes[i] = Vec3(x_rand, y_rand, z_rand);
-        }
-    }
-    MPI_Bcast(snowflakes.data(), snowflake_count * 3, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+	for (int i = 0; i < snowflake_count; ++i) {
+		double x_rand = dist_xz(rng);
+		double y_rand = dist_y(rng);
+		double z_rand = dist_xz(rng);
+
+		// Clamping bounds: covering a wide, deep area
+		if (x_rand < -25.0) x_rand = -25.0;
+		else if (x_rand > 25.0) x_rand = 25.0;
+
+		if (z_rand < -25.0) z_rand = -25.0;
+		else if (z_rand > 25.0) z_rand = 25.0;
+
+		Vec3 snowflake = Vec3(x_rand, y_rand, z_rand);
+
+		//Shift camera to origin and rotate so that cam_dir is (0,0,1)
+		Vec3 snowflake_shifted = snowflake - camera_pos;
+		double x_transf = snowflake_shifted.dot(right);
+		double y_transf = snowflake_shifted.dot(cam_up);
+		double z_transf = snowflake_shifted.dot(camera_dir);
+
+		//Step 1: Figure out if this is in correct distance range. If not, reject it.
+		//By triangle inequality and under the assumption that the ray hits the sphere:
+		//proj \in [(snowflake - camera_pos).length() - snowflake_radius , (snowflake - camera_pos).length() + snowflake_radius]. So if this range doesn't intersect [0, max_ray_distance], this snowflake will never be rendered
+		if (snowflake_shifted.length() > max_ray_distance + snowflake_radius || snowflake_shifted.length() + snowflake_radius < 0)
+			continue;
+
+		//Step 2: Determine bounding box
+		if (x_transf * x_transf + z_transf * z_transf - snowflake_radius * snowflake_radius < 0 || y_transf * y_transf + z_transf * z_transf - snowflake_radius * snowflake_radius < 0)
+			continue;  //We are somehow in the sphere, so there will be no tangent cone
+		
+		double x_virt_min = (x_transf * z_transf - snowflake_radius * std::sqrt(x_transf * x_transf + z_transf * z_transf - snowflake_radius * snowflake_radius)) / (z_transf * z_transf - snowflake_radius * snowflake_radius);
+		double x_virt_max = (x_transf * z_transf + snowflake_radius * std::sqrt(x_transf * x_transf + z_transf * z_transf - snowflake_radius * snowflake_radius)) / (z_transf * z_transf - snowflake_radius * snowflake_radius);
+		int x_bound_min =  x_virt_min * ((double)width / (double)(2. * aspect_ratio * scale)) + ((double)width - 1.) / 2.;
+		int x_bound_max = (x_virt_max * ((double)width / (double)(2. * aspect_ratio * scale)) + ((double)width - 1.) / 2.) + 1;
+
+		double y_virt_min = (y_transf * z_transf - snowflake_radius * std::sqrt(y_transf * y_transf + z_transf * z_transf - snowflake_radius * snowflake_radius)) / (z_transf * z_transf - snowflake_radius * snowflake_radius);
+		double y_virt_max = (y_transf * z_transf + snowflake_radius * std::sqrt(y_transf * y_transf + z_transf * z_transf - snowflake_radius * snowflake_radius)) / (z_transf * z_transf - snowflake_radius * snowflake_radius);
+		int y_bound_min =  (((double)height - 1.) / 2.) - y_virt_max * ((double)height / (double)(2. * scale));
+		int y_bound_max = ((((double)height - 1.) / 2.) - y_virt_min * ((double)height / (double)(2. * scale))) + 1.;
+
+		//Step 3: Make sure that bounding box intersects viewing window
+		if (x_bound_max < 0 || x_bound_min >= width || y_bound_max < 0 || y_bound_min >= height)
+			continue;
+			
+		//Step 4: Accept the snowflake
+		for (int row = std::max(0, y_bound_min); row <= std::min(y_bound_max, height-1); row++)
+			snowflakes[row].emplace_back(x_bound_min, x_bound_max, snowflake);
+	}
+	
+	//TODO: Test the following and data oriented: split snowflakes into three vectors
+#if 0
+	for(int row = 0; row != width; ++row)
+		std::sort(snowflakes[row].begin(), snowflakes[row].end());
+#endif
 
 	//This lambda will actually do the raytracing to compute the pixel values of a tile. 
 	//The output format is a flattened RGB array. We do it this way instead of "Color"-structs, as 
@@ -252,10 +305,10 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 
                 // SNOWFLAKE OVERLAY
                 // Overlay snowflakes as tiny white dots
-                const double snowflake_radius = 0.008;
-                const double max_ray_distance = 8.0;
+                for (const auto& [x_min, x_max, flake_pos] : snowflakes[y]) {
+					if (x < x_min || x > x_max)
+						continue;
 
-                for (const auto& flake_pos : snowflakes) {
                     Vec3 to_flake = flake_pos - ray_orig;
                     double proj = to_flake.dot(ray_dir);
 
