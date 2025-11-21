@@ -9,6 +9,7 @@
 #include <string>
 #include "utils.hpp"
 #include "scene.hpp"
+#include <x86intrin.h>
 
 class RayTracer {
 public:
@@ -24,6 +25,10 @@ private:
 	template<bool ray_dir_normalized>
     bool intersect_sphere(const Vec3& ray_orig, const Vec3& ray_dir,
                           const Sphere& sphere, double& t);
+	template<bool ray_dir_normalized>
+    __m256d intersect_sphere_vectorized(const Vec3& ray_orig, const Vec3& ray_dir,
+                                        const double* center_x, const double* center_y,
+                                        const double* center_z, const double* radius);
     bool intersect_plane(const Vec3& ray_orig, const Vec3& ray_dir,
                          const Plane& plane, double& t);
 };
