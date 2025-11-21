@@ -115,8 +115,8 @@ __m256d RayTracer::intersect_sphere_vectorized(const Vec3& ray_orig, const Vec3&
 	__mmask8 near_gt_eps = _mm256_cmp_pd_mask(t_near, eps, _CMP_GT_OQ);
 	__mmask8  far_gt_eps = _mm256_cmp_pd_mask(t_far , eps, _CMP_GT_OQ);
 
-	t_candidate = _mm256_mask_mov_pd(t_far, v1_gt_eps, t_near);
-	__mmask8 any_gt_eps = v1_gt_eps | v2_gt_eps;
+	t_candidate = _mm256_mask_mov_pd(t_far, near_gt_eps, t_near);
+	__mmask8 any_gt_eps = near_gt_eps | near_gt_eps;
 	t_candidate = _mm256_mask_mov_pd(infty, any_gt_eps, t_candidate);
 #else
 #warning Old processor
