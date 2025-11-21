@@ -1,0 +1,3 @@
+Adding the bounding boxes halfs the runtime.
+
+Turning on vectorization then more than doubles it!

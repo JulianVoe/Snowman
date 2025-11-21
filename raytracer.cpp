@@ -104,6 +104,35 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
         }
     }
 
+	auto compute_bounding_box = [&](const Vec3& midpoint, double radius) -> std::tuple<bool, int, int, int, int> {
+		//Shift camera to origin and rotate so that cam_dir is (0,0,1)
+		Vec3   sphere_shifted = midpoint - camera_pos;
+		double x_transf = sphere_shifted.dot(right);
+		double y_transf = sphere_shifted.dot(cam_up);
+		double z_transf = sphere_shifted.dot(camera_dir);
+
+		//Step 2: Determine bounding box
+		if (x_transf * x_transf + z_transf * z_transf - radius * radius < 0 || y_transf * y_transf + z_transf * z_transf - radius * radius < 0)
+			return std::tuple(false, 0, 0, 0, 0);  //We are somehow in the sphere, so there will be no tangent cone
+		
+		double x_virt_min = (x_transf * z_transf - radius * std::sqrt(x_transf * x_transf + z_transf * z_transf - radius * radius)) / (z_transf * z_transf - radius * radius);
+		double x_virt_max = (x_transf * z_transf + radius * std::sqrt(x_transf * x_transf + z_transf * z_transf - radius * radius)) / (z_transf * z_transf - radius * radius);
+		int x_bound_min =  x_virt_min * ((double)width / (double)(2. * aspect_ratio * scale)) + ((double)width - 1.) / 2.;
+		int x_bound_max = (x_virt_max * ((double)width / (double)(2. * aspect_ratio * scale)) + ((double)width - 1.) / 2.) + 1;
+
+		double y_virt_min = (y_transf * z_transf - radius * std::sqrt(y_transf * y_transf + z_transf * z_transf - radius * radius)) / (z_transf * z_transf - radius * radius);
+		double y_virt_max = (y_transf * z_transf + radius * std::sqrt(y_transf * y_transf + z_transf * z_transf - radius * radius)) / (z_transf * z_transf - radius * radius);
+		int y_bound_min =  (((double)height - 1.) / 2.) - y_virt_max * ((double)height / (double)(2. * scale));
+		int y_bound_max = ((((double)height - 1.) / 2.) - y_virt_min * ((double)height / (double)(2. * scale))) + 1.;
+
+		//Step 3: Make sure that bounding box intersects viewing window
+		if (x_bound_max < 0 || x_bound_min >= width || y_bound_max < 0 || y_bound_min >= height)
+			return std::tuple(false, 0, 0, 0, 0);
+
+		return std::tuple(true, x_bound_min, x_bound_max, y_bound_min, y_bound_max);
+	};
+
+
 	//Generate snowflakes
 	// This is done by only one thread and then broadcasted instead of by all threads simultaneously.
 	// The reason is that only this way we get a consistent image: snowflakes are circles which could
@@ -118,21 +147,11 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 	const double snowflake_radius = 0.008;
 	const double max_ray_distance = 8.0;
 
-	struct BoundedSnowflake {
-		int x_min;
-		int x_max;
-		Vec3 snowflake;
-
-		BoundedSnowflake(int x_min_, int x_max_, const Vec3& snowflake_) :
-			x_min(x_min_), x_max(x_max_), snowflake(snowflake_)
-		{}
-	};
-	std::vector<std::vector<BoundedSnowflake>> snowflakes(height);
-
 	std::mt19937 rng(12345);
 	std::normal_distribution<double> dist_xz(0.0, 6.0);
 	std::uniform_real_distribution<double> dist_y(-1.0, 25.0);
 
+	std::vector<std::vector<Bounded<Vec3>>> snowflakes(height);
 	for (int i = 0; i < snowflake_count; ++i) {
 		double x_rand = dist_xz(rng);
 		double y_rand = dist_y(rng);
@@ -146,48 +165,39 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 		else if (z_rand > 25.0) z_rand = 25.0;
 
 		Vec3 snowflake = Vec3(x_rand, y_rand, z_rand);
-
-		//Shift camera to origin and rotate so that cam_dir is (0,0,1)
-		Vec3 snowflake_shifted = snowflake - camera_pos;
-		double x_transf = snowflake_shifted.dot(right);
-		double y_transf = snowflake_shifted.dot(cam_up);
-		double z_transf = snowflake_shifted.dot(camera_dir);
-
+		
 		//Step 1: Figure out if this is in correct distance range. If not, reject it.
 		//By triangle inequality and under the assumption that the ray hits the sphere:
 		//proj \in [(snowflake - camera_pos).length() - snowflake_radius , (snowflake - camera_pos).length() + snowflake_radius]. So if this range doesn't intersect [0, max_ray_distance], this snowflake will never be rendered
+		Vec3 snowflake_shifted = snowflake - camera_pos; //Shift so that camera is at origin
 		if (snowflake_shifted.length() > max_ray_distance + snowflake_radius || snowflake_shifted.length() + snowflake_radius < 0)
 			continue;
 
-		//Step 2: Determine bounding box
-		if (x_transf * x_transf + z_transf * z_transf - snowflake_radius * snowflake_radius < 0 || y_transf * y_transf + z_transf * z_transf - snowflake_radius * snowflake_radius < 0)
-			continue;  //We are somehow in the sphere, so there will be no tangent cone
-		
-		double x_virt_min = (x_transf * z_transf - snowflake_radius * std::sqrt(x_transf * x_transf + z_transf * z_transf - snowflake_radius * snowflake_radius)) / (z_transf * z_transf - snowflake_radius * snowflake_radius);
-		double x_virt_max = (x_transf * z_transf + snowflake_radius * std::sqrt(x_transf * x_transf + z_transf * z_transf - snowflake_radius * snowflake_radius)) / (z_transf * z_transf - snowflake_radius * snowflake_radius);
-		int x_bound_min =  x_virt_min * ((double)width / (double)(2. * aspect_ratio * scale)) + ((double)width - 1.) / 2.;
-		int x_bound_max = (x_virt_max * ((double)width / (double)(2. * aspect_ratio * scale)) + ((double)width - 1.) / 2.) + 1;
-
-		double y_virt_min = (y_transf * z_transf - snowflake_radius * std::sqrt(y_transf * y_transf + z_transf * z_transf - snowflake_radius * snowflake_radius)) / (z_transf * z_transf - snowflake_radius * snowflake_radius);
-		double y_virt_max = (y_transf * z_transf + snowflake_radius * std::sqrt(y_transf * y_transf + z_transf * z_transf - snowflake_radius * snowflake_radius)) / (z_transf * z_transf - snowflake_radius * snowflake_radius);
-		int y_bound_min =  (((double)height - 1.) / 2.) - y_virt_max * ((double)height / (double)(2. * scale));
-		int y_bound_max = ((((double)height - 1.) / 2.) - y_virt_min * ((double)height / (double)(2. * scale))) + 1.;
-
-		//Step 3: Make sure that bounding box intersects viewing window
-		if (x_bound_max < 0 || x_bound_min >= width || y_bound_max < 0 || y_bound_min >= height)
+		const auto& [viable, x_bound_min, x_bound_max, y_bound_min, y_bound_max] = compute_bounding_box(snowflake, snowflake_radius);
+		if (!viable)
 			continue;
-			
+
 		//Step 4: Accept the snowflake
 		for (int row = std::max(0, y_bound_min); row <= std::min(y_bound_max, height-1); row++)
 			snowflakes[row].emplace_back(x_bound_min, x_bound_max, snowflake);
 	}
 	
 	//TODO: Test the following and data oriented: split snowflakes into three vectors
-	for (auto& row : snowflakes) {
- 		std::sort(row.begin(), row.end(), [](const BoundedSnowflake& a, const BoundedSnowflake& b) {
-			return a.x_min < b.x_min;
-		});
+	for (auto& row : snowflakes)
+ 		std::sort(row.begin(), row.end());
+
+	//Compute bounding boxes for spheres in scene and order them by that
+	std::vector<std::vector<Bounded<Sphere>>> row_spheres(height);
+	for (const auto& sphere : scene->spheres) {
+		const auto& [viable, x_bound_min, x_bound_max, y_bound_min, y_bound_max] = compute_bounding_box(sphere.center, sphere.radius);
+		if (!viable)
+			continue;
+
+		for (int row = std::max(0, y_bound_min); row <= std::min(y_bound_max, height-1); row++)
+			row_spheres[row].emplace_back(x_bound_min, x_bound_max, sphere);
 	}
+	for (auto& row : row_spheres)
+ 		std::sort(row.begin(), row.end());
 
 	//This lambda will actually do the raytracing to compute the pixel values of a tile. 
 	//The output format is a flattened RGB array. We do it this way instead of "Color"-structs, as 
@@ -210,7 +220,12 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                 const Plane * hit_plane = nullptr;
 
                 // Find closest sphere hit
-                for (const auto& sphere : scene->spheres) {
+                for (const auto& [x_min, x_max, sphere] : row_spheres[y]) {
+					if (x < x_min)
+						break;
+		  			if (x > x_max)
+						continue;
+
                     double t;
                     if (intersect_sphere<true>(ray_orig, ray_dir, sphere, t) && t < closest_t) {
                         closest_t = t;
