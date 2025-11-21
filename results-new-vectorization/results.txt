@@ -1,0 +1,4 @@
+Both with and without -march=native, the compiler choose to use avx2! The -march=native version is still faster, so perhaps it was used more consequentially. 
+
+Perf shows that the majority of the runtime is still iterating over all the spheres - this doesn't just happen at the beginning, but also for the shadow rays. These however cannot be
+accelerated using bounding boxes, since they have different origins than the camera.
