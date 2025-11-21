@@ -1,0 +1,13 @@
+Even after the improved math of intersect_sphere, it still takes up the majority of the time. But now not just the comparison takes up basically all of the time, but only about half. The other half is computations.
+
+The computations do benefit from turning on vectorization this time: this is because looking at the assembly, no fma instructions are emitted for the dot-product. Apart from that, all other single-instructions are changed for vex-coded single-instructions. So no real vectorization has taken place yet. Therefore there really are two possibilities to go ahead (well, 3: the runtime is already so low that realistically speaking, it doesn't even matter):
+ - Introduce the same bounding boxes for the spheres as for the snowflakes. Note that there are only 44 spheres in the whole scene instead of 75.000 for the snowflakes, but we would still majorly reduce the intersect_sphere code. Half of its runtime was in predicting the branch which would probably remain, because we instead would have to predict the bounding box branch. But the other half for the computation could be reduced. But we can't expect more than about a 50% reduction in runtime. But this would be the conceptually more elegant solution
+ - We could manually vectorize the intersect_sphere function. There are two ways to do it:
+   - There is the way that takes only one sphere and then uses vectorization for the dot product and so on. But this needs an horizontal sum and from my experience I would say that this will probably make the code just slower. I won't test this
+   - We can vectorize it in the sense that we test multiple spheres at the same time. The computation part will be easy to vectorize this way: this is because it currently only uses vex-coded single-instructions instead of packed ones. But to use the latter, we would need to change the data-layout to be more data-oriented: we need the x-coordinates to be adjacent in an array, another array for the y-coordinates, one for the z-coordinates and one for the radii (perhaps also for colors, but these don't occur in intersect_sphere directly). It gets harder for the control flow and always seeking the minimum. I think this is still pretty doable, though.
+
+   If we use AVX (which we should), we can operate on 4 doubles at the same time. This is convenient for us, since the number of spheres (44) is divisible by 4.
+
+But note that this makes the both methods incompatible: if we compute bounding boxes, then we would expect that there are mostly <4 spheres per row, making this type of vectorization useless.
+
+Thus I will create two more branches for this.
