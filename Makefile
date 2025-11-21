@@ -1,9 +1,9 @@
 # Compiler and flags
 CXX = mpic++
-CXXFLAGS = -O3 -std=c++17
+CXXFLAGS = -O3 -std=c++20 -march=native
 INSTR_CXX = scorep-mpicxx
 INSTR_CXX_ONLY = scorep --nocompiler mpicxx
-INSTR_CXX_FLAGS = -O3 -std=c++17 -g
+INSTR_CXX_FLAGS = -O3 -std=c++20 -march=native -g
 
 # Source files
 SRCS = main.cpp raytracer.cpp scene.cpp
