@@ -309,7 +309,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 					__m256d t_canidate = intersect_sphere_vectorized<true>(ray_orig, ray_dir, sphere_centers_x + i, sphere_centers_y + i, sphere_centers_z + i, sphere_radii + i);
 				
 #if defined __AVX512VL__ && defined __AVX512F__
-					__mmask8 better = _mm256_cmp_pd_mask(t_candidate, closest_t_vec, _CMP_LT_OQ);
+					__mmask8 better = _mm256_cmp_pd_mask(t_canidate, closest_t_vec, _CMP_LT_OQ);
 
 					closest_t_vec = _mm256_mask_mov_pd   (closest_t_vec, better, t_canidate);
 					closest_t_idx = _mm256_mask_mov_epi64(closest_t_idx, better, current_idx);
