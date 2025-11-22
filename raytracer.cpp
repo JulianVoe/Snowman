@@ -434,7 +434,6 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 					for(int i = 0; i < scene->spheres.size(); i+=4) {
 						if (does_intersect_sphere_vectorized<true>(shadow_origin, shadow_dir, sphere_centers_x + i, sphere_centers_y + i, sphere_centers_z + i, sphere_radii + i)) {
 							in_shadow = true;
-							std::cout << i << " " << hit_sphere - scene->spheres.data() << "\n";
 							break;
 						}
                     }
@@ -467,7 +466,6 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 					for(int i = 0; i < scene->spheres.size(); i+=4) {
 						if (does_intersect_sphere_vectorized<true>(shadow_origin, shadow_dir, sphere_centers_x + i, sphere_centers_y + i, sphere_centers_z + i, sphere_radii + i)) {
 							in_shadow = true;
-							std::cout << i << " " << hit_sphere - scene->spheres.data() << "\n";
 							break;
 						}
                     }
