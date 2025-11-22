@@ -95,6 +95,16 @@ __m256d RayTracer::intersect_sphere_vectorized(const Vec3& ray_orig, const Vec3&
 	//const __m256d discriminant = _mm256_sub_pd(_mm256_mul_pd(half_b, half_b), c);
 //	__m256d result_mask = _mm256_cmp_pd(discriminant, zero, _CMP_GT_OQ); //Not needed: NaN entries work out with carefully chosen comparisons down below
 
+#if defined __AVX512VL__ && defined __AVX512F__
+	__mmask8 any_intersection = _mm256_cmp_pd_mask(discriminant, zero, _CMP_GT_OQ);
+	if (any_intersection == 0)
+		return infty;
+#else
+	__m256d any_intersection = _mm256_cmp_pd(discriminant, zero, _CMP_GT_OQ);
+	int mask = _mm256_movemask_pd(any_intersection);
+	if (mask == 0)
+		return infty;
+#endif
 
 	__m256d sqrt_disc = _mm256_sqrt_pd(discriminant);  //This will contain -NaN for entries indicated in result_mask
 	const __m256d neg_half_b = _mm256_sub_pd(zero, half_b);
