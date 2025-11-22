@@ -137,6 +137,74 @@ __m256d RayTracer::intersect_sphere_vectorized(const Vec3& ray_orig, const Vec3&
 	return t_candidate;
 }
 
+template<bool ray_dir_normalized>
+bool RayTracer::does_intersect_sphere_vectorized(const Vec3& ray_orig, const Vec3& ray_dir,
+                                               const double* center_x, const double* center_y,
+                                               const double* center_z, const double* radius) {
+	//Load ray into registers. This will be optimized away to only happen once, hopefully
+	const __m256d orig_x = _mm256_set1_pd(ray_orig.x);
+	const __m256d orig_y = _mm256_set1_pd(ray_orig.y);
+	const __m256d orig_z = _mm256_set1_pd(ray_orig.z);
+
+	const __m256d dir_x = _mm256_set1_pd(ray_dir.x);
+	const __m256d dir_y = _mm256_set1_pd(ray_dir.y);
+	const __m256d dir_z = _mm256_set1_pd(ray_dir.z);
+
+	const __m256d zero  = _mm256_setzero_pd();
+	const __m256d eps   = _mm256_set1_pd(1e-4);
+	const __m256d infty = _mm256_set1_pd(std::numeric_limits<double>::infinity());
+
+	const __m256d cx = _mm256_load_pd(center_x);
+	const __m256d cy = _mm256_load_pd(center_y);
+	const __m256d cz = _mm256_load_pd(center_z);
+	const __m256d r  = _mm256_load_pd(radius);
+
+	const __m256d ocx = _mm256_sub_pd(orig_x, cx);
+	const __m256d ocy = _mm256_sub_pd(orig_y, cy);
+	const __m256d ocz = _mm256_sub_pd(orig_z, cz);
+
+
+	const __m256d half_b = _mm256_fmadd_pd(ocx, dir_x, _mm256_fmadd_pd(ocy, dir_y, _mm256_mul_pd(ocz, dir_z)));
+	const __m256d oc_dot = _mm256_fmadd_pd(ocx, ocx, _mm256_fmadd_pd(ocy, ocy, _mm256_mul_pd(ocz, ocz)));
+	const __m256d c = _mm256_fnmadd_pd(r, r, oc_dot);
+	//const __m256d c = _mm256_sub_pd(oc_dot, _mm256_mul_pd(r, r));
+
+	const __m256d discriminant = _mm256_fmsub_pd(half_b, half_b, c);
+	//const __m256d discriminant = _mm256_sub_pd(_mm256_mul_pd(half_b, half_b), c);
+//	__m256d result_mask = _mm256_cmp_pd(discriminant, zero, _CMP_GT_OQ); //Not needed: NaN entries work out with carefully chosen comparisons down below
+
+#if defined __AVX512VL__ && defined __AVX512F__
+	__mmask8 any_intersection = _mm256_cmp_pd_mask(discriminant, zero, _CMP_GT_OQ);
+	if (any_intersection == 0)
+		return false;
+#else
+	__m256d any_intersection = _mm256_cmp_pd(discriminant, zero, _CMP_GT_OQ);
+	int mask = _mm256_movemask_pd(any_intersection);
+	if (mask == 0)
+		return false;
+#endif
+
+	__m256d sqrt_disc = _mm256_sqrt_pd(discriminant);  //This will contain -NaN for entries indicated in result_mask
+
+	//We want to check (-half_b + sqrt_disc) / ray_dir.dot(ray_dir) >= eps. 
+	//To make computation dependency chains shorted, instead we test sqrt_disc >= eps * ray_dir.dot(ray_dir) + half_b
+	__m256d changed_eps = eps;
+	if constexpr (!ray_dir_normalized) 
+		changed_eps = _mm256_mul_pd(changed_eps, _mm256_set1_pd(ray_dir.dot(ray_dir)));
+	changed_eps = _mm256_add_pd(changed_eps, half_b);
+
+	//For the output, we want to create a vector that has the closest t > 1e-4 and
+	//infinity if this doesn't exist (i.e. if both t_near,t_far<=1e-4 or discriminant <0)
+
+#if defined __AVX512VL__ && defined __AVX512F__
+	return _mm256_cmp_pd_mask(sqrt_disc , changed_eps, _CMP_GT_OQ);
+#else
+#warning Old processor
+	return _mm256_movemask_pd(_mm256_cmp_pd(sqrt_disc, changed_eps, _CMP_GT_OQ));
+#endif
+}
+
+
 bool RayTracer::intersect_plane(const Vec3& ray_orig, const Vec3& ray_dir, const Plane& plane, double& t) {
     double denom = plane.normal.dot(ray_dir);
     if (std::fabs(denom) > 1e-6) {
@@ -353,6 +421,15 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                     }
                 }
 
+				
+				if(hit_sphere) {
+					int i = hit_sphere - scene->spheres.data();
+					sphere_centers_x[i] = camera_pos.x - camera_dir.x;
+					sphere_centers_y[i] = camera_pos.y - camera_dir.y;
+					sphere_centers_z[i] = camera_pos.z - camera_dir.z;
+					sphere_radii    [i] = 0;
+				}
+
                 Color pixel_color;
 
                 if (hit_sphere) {
@@ -361,16 +438,13 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 
                     Vec3 shadow_origin = hit_point + normal * 1e-4;
                     bool in_shadow = false;
-
                     Vec3 shadow_dir = -sunlight_dir;
-                    for (const auto& s : scene->spheres) {
-                        double t_shadow;
-                        if (&s != hit_sphere && intersect_sphere<true>(shadow_origin, shadow_dir, s, t_shadow)) {
-                            if (t_shadow > 1e-4) {
-                                in_shadow = true;
-                                break;
-                            }
-                        }
+
+					for(int i = 0; i < scene->spheres.size(); i+=4) {
+						if (does_intersect_sphere_vectorized<true>(shadow_origin, shadow_dir, sphere_centers_x + i, sphere_centers_y + i, sphere_centers_z + i, sphere_radii + i)) {
+							in_shadow = true;
+							break;
+						}
                     }
                     if (!in_shadow && floor_plane) {
                         double t_shadow_floor;
@@ -396,14 +470,13 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                     bool in_shadow = false;
 
                     Vec3 shadow_dir = -sunlight_dir;
-                    for (const auto& s : scene->spheres) {
-                        double t_shadow;
-                        if (intersect_sphere<true>(shadow_origin, shadow_dir, s, t_shadow)) {
-                            if (t_shadow > 1e-4) {
-                                in_shadow = true;
-                                break;
-                            }
-                        }
+
+					
+					for(int i = 0; i < scene->spheres.size(); i+=4) {
+						if (does_intersect_sphere_vectorized<true>(shadow_origin, shadow_dir, sphere_centers_x + i, sphere_centers_y + i, sphere_centers_z + i, sphere_radii + i)) {
+							in_shadow = true;
+							break;
+						}
                     }
 
                     if (floor_plane && hit_plane == floor_plane) {
@@ -436,6 +509,14 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                     pixel_color.g = (1 - t) * bottom.g + t * top.g;
                     pixel_color.b = (1 - t) * bottom.b + t * top.b;
                 }
+
+				if(hit_sphere) {
+					int i = hit_sphere - scene->spheres.data();
+					sphere_centers_x[i] = hit_sphere->center.x;
+					sphere_centers_x[i] = hit_sphere->center.y;
+					sphere_centers_x[i] = hit_sphere->center.z;
+					sphere_radii    [i] = hit_sphere->radius;
+				}
 
                 // SNOWFLAKE OVERLAY
                 // Overlay snowflakes as tiny white dots

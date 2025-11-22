@@ -29,6 +29,11 @@ private:
     __m256d intersect_sphere_vectorized(const Vec3& ray_orig, const Vec3& ray_dir,
                                         const double* center_x, const double* center_y,
                                         const double* center_z, const double* radius);
+	template<bool ray_dir_normalized>
+	bool does_intersect_sphere_vectorized(const Vec3& ray_orig, const Vec3& ray_dir,
+                                               const double* center_x, const double* center_y,
+                                               const double* center_z, const double* radius);
+
     bool intersect_plane(const Vec3& ray_orig, const Vec3& ray_dir,
                          const Plane& plane, double& t);
 };
