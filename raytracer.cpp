@@ -420,16 +420,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                         hit_sphere = nullptr;
                     }
                 }
-
 				
-				if(hit_sphere) {
-					int i = hit_sphere - scene->spheres.data();
-					sphere_centers_x[i] = camera_pos.x - camera_dir.x;
-					sphere_centers_y[i] = camera_pos.y - camera_dir.y;
-					sphere_centers_z[i] = camera_pos.z - camera_dir.z;
-					sphere_radii    [i] = 0;
-				}
-
                 Color pixel_color;
 
                 if (hit_sphere) {
@@ -443,6 +434,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 					for(int i = 0; i < scene->spheres.size(); i+=4) {
 						if (does_intersect_sphere_vectorized<true>(shadow_origin, shadow_dir, sphere_centers_x + i, sphere_centers_y + i, sphere_centers_z + i, sphere_radii + i)) {
 							in_shadow = true;
+							std::cout << i << " " << hit_sphere - scene->spheres.data() << "\n";
 							break;
 						}
                     }
@@ -475,6 +467,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 					for(int i = 0; i < scene->spheres.size(); i+=4) {
 						if (does_intersect_sphere_vectorized<true>(shadow_origin, shadow_dir, sphere_centers_x + i, sphere_centers_y + i, sphere_centers_z + i, sphere_radii + i)) {
 							in_shadow = true;
+							std::cout << i << " " << hit_sphere - scene->spheres.data() << "\n";
 							break;
 						}
                     }
@@ -509,14 +502,6 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                     pixel_color.g = (1 - t) * bottom.g + t * top.g;
                     pixel_color.b = (1 - t) * bottom.b + t * top.b;
                 }
-
-				if(hit_sphere) {
-					int i = hit_sphere - scene->spheres.data();
-					sphere_centers_x[i] = hit_sphere->center.x;
-					sphere_centers_x[i] = hit_sphere->center.y;
-					sphere_centers_x[i] = hit_sphere->center.z;
-					sphere_radii    [i] = hit_sphere->radius;
-				}
 
                 // SNOWFLAKE OVERLAY
                 // Overlay snowflakes as tiny white dots
