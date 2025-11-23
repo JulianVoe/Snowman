@@ -573,6 +573,8 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 
 		//3.: Main loop: poll for finished work from any worker before doing our own work
         while (active_workers) {
+			MPI_Status status{};
+
 			//Do some work yourself using slightly smaller tiles to compensate for communication overhead
             if (next_row < height) {
 				if (master_tile_height > 0) {
@@ -590,10 +592,9 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 				send_work(status.MPI_SOURCE);
 			}
 
-            MPI_Status status{};
-            int flag = 0;
 
             // Drain all available results to keep workers busy before doing local work.
+            int flag = 0;
             while (true) {
                 MPI_Iprobe(MPI_ANY_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, &flag, &status);
                 if (!flag) break;
