@@ -583,7 +583,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             send_work(r);
 
 		//3.: Main loop: poll for finished work from any worker before doing our own work
-        while (active_workers > 0) {
+		while (active_workers > 0) {
             MPI_Status status{};
             int flag = 0;
 
@@ -619,7 +619,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             MPI_Recv(master_buffer.data() + static_cast<size_t>(start) * width * 3, rows * width * 3, MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             send_work(status.MPI_SOURCE);
         }
-
+       
 		out_pixels.resize(static_cast<size_t>(width) * height);
         for (int row = 0; row < height; ++row) {
             for (int col = 0; col < width; ++col) {
