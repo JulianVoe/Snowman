@@ -583,11 +583,29 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
             send_work(r);
 
 		//3.: Main loop: poll for finished work from any worker before doing our own work
-		while (active_workers > 0) {
-            MPI_Status status{};
-            int flag = 0;
+		while (active_workers) {
+			MPI_Status status{};
+
+			//Do some work yourself using slightly smaller tiles to compensate for communication overhead
+            if (next_row < height) {
+				if (master_tile_height > 0) {
+					int rows_to_compute = std::min(master_tile_height, height - next_row);
+					compute_tile_flat(next_row, rows_to_compute, master_buffer.data() + static_cast<size_t>(next_row) * width * 3);
+					next_row += rows_to_compute;
+				}
+            } else {
+				// If there is no local work left, block for the next result to avoid spinning.
+				int header[2];
+				MPI_Recv(header, 2, MPI_INT, MPI_ANY_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, &status);
+				const int start = header[0];
+				const int rows = header[1];
+				MPI_Recv(master_buffer.data() + static_cast<size_t>(start) * width * 3, rows * width * 3, MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				send_work(status.MPI_SOURCE);
+			}
+
 
             // Drain all available results to keep workers busy before doing local work.
+            int flag = 0;
             while (true) {
                 MPI_Iprobe(MPI_ANY_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, &flag, &status);
                 if (!flag) break;
@@ -602,24 +620,8 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                 // Distribute new tile to worker (if still possible)
                 send_work(status.MPI_SOURCE);
             }
-
-			//Do some work yourself using slightly smaller tiles to compensate for communication overhead
-            if (master_tile_height > 0 && next_row < height) {
-                int rows_to_compute = std::min(master_tile_height, height - next_row);
-                compute_tile_flat(next_row, rows_to_compute, master_buffer.data() + static_cast<size_t>(next_row) * width * 3);
-                next_row += rows_to_compute;
-                continue;
-            }
-
-            // If there is no local work left, block for the next result to avoid spinning.
-            int header[2];
-            MPI_Recv(header, 2, MPI_INT, MPI_ANY_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, &status);
-            const int start = header[0];
-            const int rows = header[1];
-            MPI_Recv(master_buffer.data() + static_cast<size_t>(start) * width * 3, rows * width * 3, MPI_UNSIGNED_CHAR, status.MPI_SOURCE, static_cast<int>(Tag::RESULT), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            send_work(status.MPI_SOURCE);
         }
-       
+		       
 		out_pixels.resize(static_cast<size_t>(width) * height);
         for (int row = 0; row < height; ++row) {
             for (int col = 0; col < width; ++col) {
