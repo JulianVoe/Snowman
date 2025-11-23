@@ -58,5 +58,20 @@ struct Plane {
     Plane(const Vec3& p, const Vec3& n, const Color& c) : point(p), normal(n.normalize()), color(c) {}
 };
 
+template<typename T>
+struct Bounded {
+	int x_min;
+	int x_max;
+	T val;
+
+	Bounded(int x_min_, int x_max_, const T& val_) :
+		x_min(x_min_), x_max(x_max_), val(val_)
+	{}
+
+	bool operator<(const Bounded<T> other) {
+		return x_min < other.x_min;
+	}
+};
+
 #endif
 
