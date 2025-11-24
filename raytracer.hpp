@@ -15,6 +15,10 @@ public:
     RayTracer(int width, int height);
     void set_scene(Scene* scene);
     void render(int rank, int size, std::vector<Color>& out_pixels);
+    // Render a rectangular tile given its top-left corner (x0,y0) and size (w,h).
+    // `out` will be resized to w*h and filled row-major.
+    // `seed` is used to initialize any RNG for deterministic overlays per tile.
+    void renderTile(int x0, int y0, int w, int h, unsigned int seed, std::vector<Color>& out);
     void save_image(const std::string& filename, const std::vector<Color>& pixels);
 
 private:
