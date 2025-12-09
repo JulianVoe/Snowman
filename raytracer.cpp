@@ -19,6 +19,9 @@
 #include <random>
 #include <cmath>
 #include <mpi.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 RayTracer::RayTracer(int w, int h) : width(w), height(h), scene(nullptr) {}
 
@@ -131,8 +134,11 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
 	//The output format is a flattened RGB array. We do it this way instead of "Color"-structs, as 
 	//this format allows direct sending/receiving using MPI and thus gets rid of the unnecessary 
 	//conversion inbetween
-	auto compute_tile_flat = [&](int start_row, int row_count, unsigned char* buffer) {
-        for (int y = start_row; y < start_row + row_count; ++y) {
+        auto compute_tile_flat = [&](int start_row, int row_count, unsigned char* buffer) {
+        const int end_row = start_row + row_count;
+#pragma omp parallel for collapse(2) schedule(dynamic, 1) default(none) \
+    shared(buffer, snowflakes, floor_plane, start_row, end_row, width, height, aspect_ratio, scale, camera_dir, right, cam_up, camera_pos, scene, sunlight_dir, ambient)
+        for (int y = start_row; y < end_row; ++y) {
             for (int x = 0; x < width; ++x) {
                 double ndc_x = (x + 0.5) / width;
                 double ndc_y = (y + 0.5) / height;
@@ -274,7 +280,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
                     }
                 }
 
-                size_t idx = ((y - start_row) * width + x) * 3;
+                size_t idx = (static_cast<size_t>(y - start_row) * width + x) * 3;
                 buffer[idx + 0] = pixel_color.r;
                 buffer[idx + 1] = pixel_color.g;
                 buffer[idx + 2] = pixel_color.b;

@@ -1,6 +1,6 @@
 # Compiler and flags
-CXX = mpic++
-CXXFLAGS = -O3 -std=c++17
+CXX ?= mpic++
+CXXFLAGS ?= -O3 -std=c++17 -fopenmp
 INSTR_CXX = scorep-mpicxx
 INSTR_CXX_ONLY = scorep --nocompiler mpicxx
 INSTR_CXX_FLAGS = -O3 -std=c++17 -g
