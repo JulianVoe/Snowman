@@ -137,7 +137,7 @@ void RayTracer::render(int rank, int size, std::vector<Color>& out_pixels) {
         auto compute_tile_flat = [&](int start_row, int row_count, unsigned char* buffer) {
         const int end_row = start_row + row_count;
 #pragma omp parallel for collapse(2) schedule(dynamic, 1) default(none) \
-    shared(buffer, snowflakes, floor_plane, start_row, end_row, width, height, aspect_ratio, scale, camera_dir, right, cam_up, camera_pos, scene, sunlight_dir, ambient)
+    shared(this, buffer, snowflakes, floor_plane, start_row, end_row, width, height, aspect_ratio, scale, camera_dir, right, cam_up, camera_pos, scene, sunlight_dir, ambient)
         for (int y = start_row; y < end_row; ++y) {
             for (int x = 0; x < width; ++x) {
                 double ndc_x = (x + 0.5) / width;
