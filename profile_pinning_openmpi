@@ -1,0 +1,73 @@
+#!/bin/bash
+set -euo pipefail
+
+# --- configuration ---------------------------------------------------------
+N=${N:-1024}
+MEN=${MEN:-4}
+CFGS=${CFGS:-"1 96 2 48 3 32 4 24 6 16 8 12 12 8 16 6 24 4 32 3 48 2 96 1"}
+SCOREP_MPI_ENABLE_GROUPS=${SCOREP_MPI_ENABLE_GROUPS:-"cg,coll,p2p,xnonblock"}
+
+OUT="openmpi_profile_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$OUT"
+echo "Writing results to: $OUT"
+
+# --- environment / build ---------------------------------------------------
+module purge
+module load OpenMPI/4.1.6-GCC-13.2.0
+module load LinaroForge/25.0.3-GCCcore-13.2.0-linux-x86_64
+module load Score-P
+
+make clean
+CXX=mpic++ CXXFLAGS="-O3 -std=c++17 -fopenmp -g" make
+INSTR_CXX=scorep-mpicxx INSTR_CXX_FLAGS="-O3 -std=c++17 -fopenmp -g" make instr
+
+mv snowman snowman-instr "$OUT"
+cd "$OUT"
+
+# --- OpenMPI process pinning -----------------------------------------------
+OMPI_COMMON_OPTIONS=(
+  --bind-to core
+  --report-bindings
+  --mca rmaps_base_oversubscribe 0
+)
+
+# --- OpenMP thread pinning inside each MPI rank ----------------------------
+export OMP_PLACES=cores
+export OMP_PROC_BIND=close
+#export OMP_DISPLAY_ENV=VERBOSE
+
+run_profiles() {
+    local nprocs=$1
+    local nthreads=$2
+
+    export OMP_NUM_THREADS="$nthreads"
+
+    local tag="${nprocs}procs_${nthreads}threads"
+    local map_log="map_${tag}.log"
+    local scorep_log="scorep_${tag}.log"
+    local scorep_dir="scorep_${tag}"
+
+    echo "Running config: procs=${nprocs}, threads=${nthreads}"
+
+    ( map --profile mpirun -np "$nprocs" "${OMPI_COMMON_OPTIONS[@]}" --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman "$N" "$MEN" ) >"$map_log" 2>&1
+
+    SCOREP_EXPERIMENT_DIRECTORY="$scorep_dir" \
+    SCOREP_ENABLE_PROFILING=true \
+    SCOREP_ENABLE_TRACING=false \
+    SCOREP_MPI_ENABLE_GROUPS="$SCOREP_MPI_ENABLE_GROUPS" \
+    mpirun -np "$nprocs" "${OMPI_COMMON_OPTIONS[@]}" --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-instr "$N" "$MEN" >"$scorep_log" 2>&1
+}
+
+set -- $CFGS
+while [ $# -gt 0 ]; do
+  procs=$1
+  threads=$2
+  run_profiles "$procs" "$threads"
+  shift 2
+done
+
+echo "All runs finished. Map logs:"
+ls map_*.log
+
+echo "Score-P experiment directories:"
+ls -d scorep_* 2>/dev/null || true
