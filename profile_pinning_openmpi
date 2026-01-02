@@ -143,7 +143,7 @@ set -- $CFGS
 while [ $# -gt 0 ]; do
   procs=$1
   threads=$2
-  echo "Running config: procs=${nprocs}, threads=${nthreads}"
+  echo "Running config: procs=${procs}, threads=${threads}"
   t=$(timed_run "$procs" "$threads")
   echo "$threads,$procs,$t" | tee -a "$CSV"
   run_profiles "$procs" "$threads"
