@@ -13,8 +13,9 @@ echo "Writing results to: $OUT"
 
 # --- environment / build ---------------------------------------------------
 module purge
-module load OpenMPI/4.1.6-GCC-13.2.0
-module load LinaroForge/25.0.3-GCCcore-13.2.0-linux-x86_64
+module load GCC/13.3.0
+module load OpenMPI/5.0.3-GCC-13.3.0
+module load LinaroForge/25.0.3-GCCcore-13.3.0-linux-x86_64
 module load Score-P
 
 make clean
