@@ -70,12 +70,13 @@ submit_job() {
     local log=$5
     local nprocs=$6
 
+#      --ntasks="$nprocs" \
+#      --cpus-per-task="$omp_threads" \
+
     srun \
       --job-name="$job_name" \
 	  --partition=intelsr_devel \
       --ntasks=96 \
-#      --ntasks="$nprocs" \
-#      --cpus-per-task="$omp_threads" \
       --output="$log" \
       --error="$log" \
       bash -lc "$(cat <<EOF
