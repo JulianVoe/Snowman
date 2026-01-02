@@ -13,7 +13,7 @@ echo "Writing results to: $OUT"
 
 # --- environment / build ---------------------------------------------------
 # NOTE: Run this script inside a Slurm allocation (e.g., via salloc),
-# so sbatch submissions execute within the reserved compute node(s).
+# and launch mpirun directly so it uses the allocation without srun.
 load_linaroforge_modules() {
   module purge
   module load GCC/13.2.0
@@ -63,37 +63,33 @@ export OMP_PLACES=cores
 export OMP_PROC_BIND=close
 #export OMP_DISPLAY_ENV=VERBOSE
 
-submit_job() {
+run_step() {
     local job_name=$1
     local module_loader=$2
     local omp_threads=$3
     local command=$4
     local log=$5
-    local nprocs=$6
+    local env_setup=${6:-}
 
-    sbatch --wait \
-      --job-name="$job_name" \
-      --nodes=1 \
-      --ntasks="$nprocs" \
-      --cpus-per-task="$omp_threads" \
-      --exclusive \
-      --output="$log" \
-      --error="$log" \
-      --wrap="$(cat <<EOF
-set -euo pipefail
-$module_loader
-export OMP_NUM_THREADS="$omp_threads"
-export OMP_PLACES=cores
-export OMP_PROC_BIND=close
-export I_MPI_PIN=1
-export I_MPI_PIN_CELL=core
-export I_MPI_PIN_DOMAIN=omp:compact
-export I_MPI_PIN_ORDER=compact
-export I_MPI_DEBUG=5
-export I_MPI_PIN_RESPECT_CPUSET=1
-$command
-EOF
-)"
+    echo "Running ${job_name} (log: ${log})"
+
+    (
+      set -euo pipefail
+      "$module_loader"
+      export OMP_NUM_THREADS="$omp_threads"
+      export OMP_PLACES=cores
+      export OMP_PROC_BIND=close
+      export I_MPI_PIN=1
+      export I_MPI_PIN_CELL=core
+      export I_MPI_PIN_DOMAIN=omp:compact
+      export I_MPI_PIN_ORDER=compact
+      export I_MPI_DEBUG=5
+      export I_MPI_PIN_RESPECT_CPUSET=1
+      if [[ -n "$env_setup" ]]; then
+        eval "$env_setup"
+      fi
+      eval "$command"
+    ) >"$log" 2>&1
 }
 
 run_profiles() {
@@ -107,21 +103,20 @@ run_profiles() {
 
     echo "Running config: procs=${nprocs}, threads=${nthreads}"
 
-    submit_job \
+    run_step \
       "map_${tag}" \
-      "$(declare -f load_linaroforge_modules); load_linaroforge_modules" \
+      "load_linaroforge_modules" \
       "$nthreads" \
       "map --profile mpirun -np $nprocs ./snowman-linaroforge $N $MEN" \
-      "$map_log" \
-      "$nprocs"
+      "$map_log"
 
-    submit_job \
+    run_step \
       "scorep_${tag}" \
-      "$(declare -f load_scorep_modules); load_scorep_modules; export SCOREP_EXPERIMENT_DIRECTORY=\"$scorep_dir\"; export SCOREP_ENABLE_PROFILING=true; export SCOREP_ENABLE_TRACING=false; export SCOREP_MPI_ENABLE_GROUPS=\"$SCOREP_MPI_ENABLE_GROUPS\"" \
+      "load_scorep_modules" \
       "$nthreads" \
       "mpirun -np $nprocs ./snowman-scorep-instr $N $MEN" \
       "$scorep_log" \
-      "$nprocs"
+      "export SCOREP_EXPERIMENT_DIRECTORY=\"$scorep_dir\"; export SCOREP_ENABLE_PROFILING=true; export SCOREP_ENABLE_TRACING=false; export SCOREP_MPI_ENABLE_GROUPS=\"$SCOREP_MPI_ENABLE_GROUPS\""
 }
 
 timed_run() {
@@ -133,13 +128,12 @@ timed_run() {
 
     echo "Timing config: procs=${nprocs}, threads=${nthreads} (log: ${log})"
 
-    submit_job \
+    run_step \
       "time_${tag}" \
-      "$(declare -f load_scorep_modules); load_scorep_modules" \
+      "load_scorep_modules" \
       "$nthreads" \
       "time mpirun -np $nprocs ./snowman-scorep $N $MEN" \
-      "$log" \
-      "$nprocs"
+      "$log"
 
     awk '/^real/ { sub(/m/, " "); sub(/s/, ""); print $2*60 + $3 }' "$log"
 }
