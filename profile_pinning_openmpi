@@ -127,7 +127,7 @@ timed_run() {
 
     submit_job \
       "time_${tag}" \
-      "$(declare -f load_linaroforge_modules); load_scorep_modules" \
+      "$(declare -f load_linaroforge_modules); load_linaroforge_modules" \
       "$nthreads" \
       "time mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-scorep $N $MEN" \
       "$log" \
