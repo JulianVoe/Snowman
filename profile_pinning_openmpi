@@ -144,9 +144,9 @@ set -- $CFGS
 while [ $# -gt 0 ]; do
   procs=$1
   threads=$2
-  run_profiles "$procs" "$threads"
   t=$(timed_run "$procs" "$threads")
   echo "$threads,$procs,$t" | tee -a "$CSV"
+  run_profiles "$procs" "$threads"
   shift 2
 done
 
