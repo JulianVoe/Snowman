@@ -70,12 +70,10 @@ submit_job() {
     local log=$5
     local nprocs=$6
 
-    sbatch --wait \
-      --job-name="$job_name" \
+    srun --job-name="$job_name" \
       --nodes=1 \
       --ntasks="$nprocs" \
       --cpus-per-task="$omp_threads" \
-      --exclusive \
       --output="$log" \
       --error="$log" \
       --wrap="$(cat <<EOF
