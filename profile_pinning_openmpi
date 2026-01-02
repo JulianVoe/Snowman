@@ -13,7 +13,7 @@ echo "Writing results to: $OUT"
 
 # --- environment / build ---------------------------------------------------
 # NOTE: Run this script inside a Slurm allocation (e.g., via salloc),
-# so sbatch submissions execute within the reserved compute node(s).
+# so srun executions use the reserved compute node(s).
 load_linaroforge_modules() {
   module purge
   module load GCC/13.2.0
@@ -70,13 +70,15 @@ submit_job() {
     local log=$5
     local nprocs=$6
 
-    srun --job-name="$job_name" \
+    srun \
+      --job-name="$job_name" \
       --nodes=1 \
       --ntasks="$nprocs" \
       --cpus-per-task="$omp_threads" \
+      --exclusive \
       --output="$log" \
       --error="$log" \
-      --wrap="$(cat <<EOF
+      bash -lc "$(cat <<EOF
 set -euo pipefail
 $module_loader
 export OMP_NUM_THREADS="$omp_threads"
