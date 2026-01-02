@@ -38,7 +38,7 @@ load_scorep_modules() {
 build_plain() {
   load_plain_modules
   make clean
-  make
+  CXX=mpic++ CXXFLAGS="-O3 -std=c++17 -fopenmp" make
 }
 
 build_linaroforge() {
