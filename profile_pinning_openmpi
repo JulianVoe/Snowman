@@ -99,8 +99,6 @@ run_profiles() {
     local scorep_log="scorep_${tag}.log"
     local scorep_dir="scorep_${tag}"
 
-    echo "Running config: procs=${nprocs}, threads=${nthreads}"
-
     submit_job \
       "map_${tag}" \
       "$(declare -f load_linaroforge_modules); load_linaroforge_modules" \
@@ -129,7 +127,7 @@ timed_run() {
 
     submit_job \
       "time_${tag}" \
-      "$(declare -f load_scorep_modules); load_scorep_modules" \
+      "$(declare -f load_linaroforge_modules); load_scorep_modules" \
       "$nthreads" \
       "time mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-scorep $N $MEN" \
       "$log" \
@@ -145,6 +143,7 @@ set -- $CFGS
 while [ $# -gt 0 ]; do
   procs=$1
   threads=$2
+  echo "Running config: procs=${nprocs}, threads=${nthreads}"
   t=$(timed_run "$procs" "$threads")
   echo "$threads,$procs,$t" | tee -a "$CSV"
   run_profiles "$procs" "$threads"
