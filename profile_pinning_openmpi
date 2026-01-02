@@ -73,8 +73,9 @@ submit_job() {
     srun \
       --job-name="$job_name" \
 	  --partition=intelsr_devel \
-      --ntasks="$nprocs" \
-      --cpus-per-task="$omp_threads" \
+      --ntasks=96 \
+#      --ntasks="$nprocs" \
+#      --cpus-per-task="$omp_threads" \
       --output="$log" \
       --error="$log" \
       bash -lc "$(cat <<EOF
