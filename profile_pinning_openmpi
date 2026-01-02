@@ -120,7 +120,7 @@ run_profiles() {
       "$nthreads" \
       "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-scorep-instr $N $MEN" \
       "$scorep_log" \
-      "export SCOREP_EXPERIMENT_DIRECTORY=\"$scorep_dir\"; export SCOREP_ENABLE_PROFILING=true; export SCOREP_ENABLE_TRACING=false; export SCOREP_MPI_ENABLE_GROUPS=\"$SCOREP_MPI_ENABLE_GROUPS\"; module load OpenMPI/4.1.6-GCC-13.2.0"
+      "export SCOREP_EXPERIMENT_DIRECTORY=\"$scorep_dir\"; export SCOREP_ENABLE_PROFILING=true; export SCOREP_ENABLE_TRACING=false; export SCOREP_MPI_ENABLE_GROUPS=\"$SCOREP_MPI_ENABLE_GROUPS\";"
 }
 
 timed_run() {
