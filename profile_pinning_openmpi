@@ -4,7 +4,7 @@ set -euo pipefail
 # --- configuration ---------------------------------------------------------
 N=${N:-1024}
 MEN=${MEN:-4}
-CFGS=${CFGS:-"1 96 2 48 3 32 4 24 6 16 8 12 12 8 16 6 24 4 32 3 48 2 96 1"}
+CFGS=${CFGS:-"96 1 1 96 2 48 3 32 4 24 6 16 8 12 12 8 16 6 24 4 32 3 48 2 96 1"}
 SCOREP_MPI_ENABLE_GROUPS=${SCOREP_MPI_ENABLE_GROUPS:-"cg,coll,p2p,xnonblock"}
 
 OUT="openmpi_profile_$(date +%Y%m%d_%H%M%S)"
