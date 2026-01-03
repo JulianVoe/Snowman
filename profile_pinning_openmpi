@@ -74,10 +74,20 @@ cd "$OUT_DIR"
 
 # --- OpenMPI process pinning -----------------------------------------------
 OMPI_COMMON_OPTIONS=(
-  --bind-to core
   --report-bindings
   --mca rmaps_base_oversubscribe 0
 )
+ompi_bind_args() {
+  local nprocs=$1
+  if [[ "$nprocs" -eq 1 ]]; then
+    # Avoid OMPI 5 refusing cross-socket binding for a single rank.
+    # Let OpenMP pin threads (OMP_PLACES/OMP_PROC_BIND).
+    echo "--bind-to none"
+  else
+    # Keep the previous behavior for multi-rank runs.
+    echo "--bind-to core"
+  fi
+}
 
 # --- OpenMP thread pinning inside each MPI rank ----------------------------
 export OMP_PLACES=cores
@@ -137,20 +147,12 @@ run_scorep_profile_base() {
     local prof_log="scorep_profile_${tag}.log"
     local prof_dir="scorep_profile_${tag}"
 
-    # optional: Linaro MAP profile for the same base config
-    run_step \
-      "map_${tag}" \
-      "load_linaroforge_modules" \
-      "$nthreads" \
-      "map --profile mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-linaroforge $N $MEN" \
-      "$map_log"
-
     # Score-P profiling only
     run_step \
       "scorep_profile_${tag}" \
       "load_scorep_modules" \
       "$nthreads" \
-      "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-scorep-instr $N $MEN" \
+      "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs") --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-scorep-instr $N $MEN" \
       "$prof_log" \
       "export SCOREP_EXPERIMENT_DIRECTORY=\"$prof_dir\";
        export SCOREP_ENABLE_PROFILING=true;
@@ -188,20 +190,28 @@ generate_filter_and_score() {
 }
 
 # Run Score-P tracing only (with filter + big buffer) for a given config
-run_scorep_trace_cfg() {
+run_trace_cfg() {
     local nprocs=$1
     local nthreads=$2
     local filt_file=$3
 
     local tag="${nprocs}procs_${nthreads}threads"
+    local map_log="map_${tag}.log"
     local trace_log="scorep_trace_${tag}.log"
     local trace_dir="scorep_trace_${tag}"
+
+	run_step \
+      "map_${tag}" \
+      "load_linaroforge_modules" \
+      "$nthreads" \
+      "map --profile mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs") --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-linaroforge $N $MEN" \
+      "$map_log"
 
     run_step \
       "scorep_trace_${tag}" \
       "load_scorep_modules" \
       "$nthreads" \
-      "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-scorep-instr $N $MEN" \
+      "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs") --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-scorep-instr $N $MEN" \
       "$trace_log" \
       "export SCOREP_EXPERIMENT_DIRECTORY=\"$trace_dir\";
        export SCOREP_ENABLE_PROFILING=false;
@@ -227,7 +237,7 @@ timed_run() {
       "time_${tag}" \
       "load_plain_modules" \
       "$nthreads" \
-      "time mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-plain $grid $snowmen" \
+      "time mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs") --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-plain $grid $snowmen" \
       "$log" >&2
 
     awk '/^real/ { sub(/m/, " "); sub(/s/, ""); print $2*60 + $3 }' "$log"
@@ -254,14 +264,11 @@ run_timing_config() {
     allocation_script=$(cat <<EOF
 set -euo pipefail
 cd "$OUT_DIR"
+$(declare -f ompi_bind_args)
 $(declare -f load_plain_modules)
 $(declare -f run_step)
 $(declare -f timed_run)
-OMPI_COMMON_OPTIONS=(
-  --bind-to core
-  --report-bindings
-  --mca rmaps_base_oversubscribe 0
-)
+OMPI_COMMON_OPTIONS="$OMPI_COMMON_OPTIONS"
 N="$N"
 MEN="$MEN"
 WS_MEN="$WS_MEN"
@@ -284,18 +291,14 @@ run_profile_base_alloc() {
     allocation_script=$(cat <<EOF
 set -euo pipefail
 cd "$OUT_DIR"
-$(declare -f load_linaroforge_modules)
+$(declare -f ompi_bind_args)
 $(declare -f load_scorep_modules)
 $(declare -f run_step)
 $(declare -f run_scorep_profile_base)
-OMPI_COMMON_OPTIONS=(
-  --bind-to core
-  --report-bindings
-  --mca rmaps_base_oversubscribe 0
-)
 SCOREP_MPI_ENABLE_GROUPS="$SCOREP_MPI_ENABLE_GROUPS"
 N="$N"
 MEN="$MEN"
+OMPI_COMMON_OPTIONS="$OMPI_COMMON_OPTIONS"
 run_scorep_profile_base "$nprocs" "$nthreads"
 EOF
 )
@@ -313,18 +316,16 @@ run_trace_cfg_alloc() {
     allocation_script=$(cat <<EOF
 set -euo pipefail
 cd "$OUT_DIR"
+$(declare -f ompi_bind_args)
+$(declare -f load_linaroforge_modules)
 $(declare -f load_scorep_modules)
 $(declare -f run_step)
 $(declare -f run_scorep_trace_cfg)
-OMPI_COMMON_OPTIONS=(
-  --bind-to core
-  --report-bindings
-  --mca rmaps_base_oversubscribe 0
-)
 SCOREP_MPI_ENABLE_GROUPS="$SCOREP_MPI_ENABLE_GROUPS"
 SCOREP_TRACE_MEMORY="$SCOREP_TRACE_MEMORY"
 N="$N"
 MEN="$MEN"
+OMPI_COMMON_OPTIONS="$OMPI_COMMON_OPTIONS"
 run_scorep_trace_cfg "$nprocs" "$nthreads" "$filt_file"
 EOF
 )
