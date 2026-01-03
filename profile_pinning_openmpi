@@ -14,7 +14,7 @@ SCOREP_MPI_ENABLE_GROUPS=${SCOREP_MPI_ENABLE_GROUPS:-"cg,coll,p2p,xnonblock"}
 PARTITION=${PARTITION:-"intelsr_devel"}
 
 # Score-P settings you’ll actually use
-# Note: 4G is the documented maximum supported by Score-P (per process). :contentReference[oaicite:1]{index=1}
+# Note: 4G is the documented maximum supported by Score-P (per process). 
 SCOREP_TRACE_MEMORY=${SCOREP_TRACE_MEMORY:-"4G"}
 
 OUT="openmpi_scorep_$(date +%Y%m%d_%H%M%S)"
@@ -163,7 +163,8 @@ run_scorep_profile_base() {
 }
 
 # Generate an automatic filter file from the base profile and log scorep-score output
-# scorep-score is the standard way to create a prospective filter file. :contentReference[oaicite:2]{index=2}
+# scorep-score is the standard way to create a prospective filter file.
+
 generate_filter_and_score() {
   local prof_dir=$1
   local filt_file=$2
@@ -173,21 +174,46 @@ generate_filter_and_score() {
     set -euo pipefail
     load_scorep_modules
 
-    if [[ ! -f "$prof_dir/profile.cubex" ]]; then
-      echo "ERROR: Missing $prof_dir/profile.cubex" >&2
+    local profile_file="$prof_dir/profile.cubex"
+    if [[ ! -f "$profile_file" ]]; then
+      echo "ERROR: Missing profile file: $profile_file" >&2
       exit 1
     fi
 
+    # Make sure target directory exists
+    mkdir -p "$(dirname "$filt_file")"
+
     echo "=== scorep-score report (for trace size + buffer estimate) ==="
-    scorep-score -r "$prof_dir/profile.cubex"
+    scorep-score -r "$profile_file"
 
     echo
-    echo "=== generating automatic filter file: $filt_file ==="
-    scorep-score -r -f "$filt_file" "$prof_dir/profile.cubex"
+    echo "=== generating automatic filter (scorep-score -g) ==="
+    # scorep-score -g writes 'initial_scorep.filter' in the current working directory
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+    (
+      cd "$tmpdir"
+      # Heuristics: filter small, frequently-called USR regions (same as your working script)
+      scorep-score -g bufferpercent=1,timepervisit=1,type=usr "$profile_file"
+      if [[ ! -f "initial_scorep.filter" ]]; then
+        echo "ERROR: scorep-score -g did not create initial_scorep.filter" >&2
+        exit 1
+      fi
+      # Install / overwrite the filter file deterministically
+      mv -f "initial_scorep.filter" "$filt_file"
+    )
+
+    echo
+    echo "Filter created at: $filt_file"
+
+    echo
+    echo "=== estimating effect of generated filter (scorep-score -f) ==="
+    # Now -f is valid because the file exists.
+    scorep-score -r "$profile_file" -f "$filt_file"
 
     echo
     echo "=== done ==="
-    echo "Filter written to: $filt_file"
   ) >"$score_log" 2>&1
 }
 
