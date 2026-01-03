@@ -500,7 +500,6 @@ done
 
 echo
 echo "Done."
-echo "Base profile dir: $base_prof_dir"
 echo "Filter file: $FILTER_FILE"
 echo "Trace dirs:"
 ls -d scorep_trace_* 2>/dev/null || true
