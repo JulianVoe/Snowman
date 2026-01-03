@@ -155,7 +155,8 @@ round() {
 
 weak_grid_size() {
     local procs=$1
-    round "$(awk -v base="$WS_N" -v p="$procs" 'BEGIN{printf "%.6f", base*sqrt(p)}')"
+	local threads=$2
+    round "$(awk -v base="$WS_N" -v p="$procs" -v t="$threads" 'BEGIN{printf "%.6f", base*sqrt(p*t)}')"
 }
 
 run_timing_config() {
@@ -164,7 +165,7 @@ run_timing_config() {
     local weak_grid
     local allocation_script
 
-    weak_grid=$(weak_grid_size "$nprocs")
+    weak_grid=$(weak_grid_size "$nprocs" "$nthreads")
 
     allocation_script=$(cat <<EOF
 set -euo pipefail
