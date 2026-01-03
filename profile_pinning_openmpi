@@ -328,7 +328,6 @@ scorep_manual_excludes() {
 #EOF
 
   cat <<'EOF'
-  *RayTracer::intersect_plane*
 EOF
 }
 
