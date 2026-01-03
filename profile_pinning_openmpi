@@ -7,8 +7,8 @@ MEN=${MEN:-4}
 WS_N=${WS_N:-128}
 WS_MEN=${WS_MEN:-3}
 
-TIMING_CFGS=${TIMING_CFGS:-"1 1 1 2 1 4 1 8 1 16 1 24 1 32 1 48 1 96 8 1 8 2 8 4 8 8 8 12 2 1 4 1 16 1 24 1 32 1 48 1 96 1 2 8 4 8 12 8 2 48 3 32 4 24 6 16 16 6 24 4 32 3 48 2"}
-PROFILE_CFGS=${PROFILE_CFGS:-"1 1 1 8 1 16 1 32 1 96 8 1 16 1 32 1 96 1 8 12 12 8"}
+TIMING_CFGS=${TIMING_CFGS-"1 1 1 2 1 4 1 8 1 16 1 24 1 32 1 48 1 96 8 1 8 2 8 4 8 8 8 12 2 1 4 1 16 1 24 1 32 1 48 1 96 1 2 8 4 8 12 8 2 48 3 32 4 24 6 16 16 6 24 4 32 3 48 2"}
+PROFILE_CFGS=${PROFILE_CFGS-"1 1 1 8 1 16 1 32 1 96 8 1 16 1 32 1 96 1 8 12 12 8"}
 
 SCOREP_MPI_ENABLE_GROUPS=${SCOREP_MPI_ENABLE_GROUPS:-"cg,coll,p2p,xnonblock"}
 PARTITION=${PARTITION:-"intelsr_devel"}
@@ -473,28 +473,40 @@ run_scorep_filter_pipeline() {
   printf -v "$__outvar" '%s' "$final_filter"
 }
 
-run_scorep_filter_pipeline FILTER_FILE
-echo "Final filter: $FILTER_FILE"
+has_cfgs() {
+  [[ -n "${1//[[:space:]]/}" ]]
+}
 
-# Now run all Score-P tracing runs (only) using the same filter + big memory buffer
-set -- $PROFILE_CFGS
-while [ $# -gt 0 ]; do
-  procs=$1
-  threads=$2
-  echo "Running tracing config (filtered): procs=${procs}, threads=${threads}"
-  run_trace_cfg_alloc "$procs" "$threads" "$FILTER_FILE"
-  shift 2
-done
+if has_cfgs "${PROFILE_CFGS:-}"; then
+  run_scorep_filter_pipeline FILTER_FILE BASE_PROF_DIR
+  echo "Final filter: $FILTER_FILE"
+
+  # tracing runs
+  set -- $PROFILE_CFGS
+  while [ $# -gt 0 ]; do
+    procs=$1
+    threads=$2
+    echo "Running tracing config (filtered): procs=${procs}, threads=${threads}"
+    run_trace_cfg_alloc "$procs" "$threads" "$FILTER_FILE"
+    shift 2
+  done
+else
+  echo "PROFILE_CFGS empty -> skipping Score-P profiling/filter generation and tracing runs."
+fi
 
 # --- Timing runs (plain) ----------------------------------------------------
-set -- $TIMING_CFGS
-while [ $# -gt 0 ]; do
-  procs=$1
-  threads=$2
-  echo "Running timing config: procs=${procs}, threads=${threads}"
-  run_timing_config "$procs" "$threads"
-  shift 2
-done
+if has_cfgs "${TIMING_CFGS:-}"; then
+  set -- $TIMING_CFGS
+  while [ $# -gt 0 ]; do
+    procs=$1
+    threads=$2
+    echo "Running timing config: procs=${procs}, threads=${threads}"
+    run_timing_config "$procs" "$threads"
+    shift 2
+  done
+else
+  echo "TIMING_CFGS empty -> skipping timing runs."
+fi
 
 echo
 echo "Done."
