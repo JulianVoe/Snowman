@@ -296,13 +296,13 @@ $(declare -f ompi_bind_args)
 $(declare -f load_linaroforge_modules)
 $(declare -f load_scorep_modules)
 $(declare -f run_step)
-$(declare -f run_scorep_trace_cfg)
+$(declare -f run_trace_cfg)
 SCOREP_MPI_ENABLE_GROUPS="$SCOREP_MPI_ENABLE_GROUPS"
 SCOREP_TRACE_MEMORY="$SCOREP_TRACE_MEMORY"
 N="$N"
 MEN="$MEN"
 OMPI_COMMON_OPTIONS="$OMPI_COMMON_OPTIONS"
-run_scorep_trace_cfg "$nprocs" "$nthreads" "$filt_file"
+run_trace_cfg "$nprocs" "$nthreads" "$filt_file"
 EOF
 )
 
