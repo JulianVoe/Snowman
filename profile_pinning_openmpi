@@ -387,32 +387,6 @@ choose_profile_base_cfg() {
   echo "$best_p $best_t"
 }
 
-run_scorep_profile_base() {
-  # UPDATED: takes seed filter as 3rd argument and applies it
-  local nprocs=$1
-  local nthreads=$2
-  local seed_filter=$3
-
-  local tag="base_${nprocs}procs_${nthreads}threads"
-  local prof_log="scorep_profile_${tag}.log"
-  local prof_dir="scorep_profile_${tag}"
-
-  run_step \
-    "scorep_profile_${tag}" \
-    "load_scorep_modules" \
-    "$nthreads" \
-    "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} \
-       $(ompi_map_args "$nprocs" "$nthreads") \
-       $(ompi_bind_args "$nprocs") \
-       ./snowman-scorep-instr $N $MEN" \
-    "$prof_log" \
-    "export SCOREP_EXPERIMENT_DIRECTORY=\"$prof_dir\";
-     export SCOREP_ENABLE_PROFILING=true;
-     export SCOREP_ENABLE_TRACING=false;
-     export SCOREP_FILTERING_FILE=\"$seed_filter\";
-     export SCOREP_MPI_ENABLE_GROUPS=\"$SCOREP_MPI_ENABLE_GROUPS\";"
-}
-
 generate_filter_and_score() {
   # UPDATED: generates auto filter from base profile, augments it with manual excludes,
   # estimates memory, and prints filter path+content into the log.
