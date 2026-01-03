@@ -230,21 +230,21 @@ if [[ -n "${TIMING_CFGS// }" ]]; then
   echo "threads,procs,pixels,seconds" > "$WEAK_CSV"
 fi
 
-set -- $TIMING_CFGS
-while [ $# -gt 0 ]; do
-  procs=$1
-  threads=$2
-  echo "Running timing config: procs=${procs}, threads=${threads}"
-  run_timing_config "$procs" "$threads"
-  shift 2
-done
-
 set -- $PROFILE_CFGS
 while [ $# -gt 0 ]; do
   procs=$1
   threads=$2
   echo "Running profiling config: procs=${procs}, threads=${threads}"
   run_profile_config "$procs" "$threads"
+  shift 2
+done
+
+set -- $TIMING_CFGS
+while [ $# -gt 0 ]; do
+  procs=$1
+  threads=$2
+  echo "Running timing config: procs=${procs}, threads=${threads}"
+  run_timing_config "$procs" "$threads"
   shift 2
 done
 
