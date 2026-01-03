@@ -9,6 +9,7 @@ WS_MEN=${WS_MEN:-3}
 TIMING_CFGS=${TIMING_CFGS:-"1 1 1 2 1 4 1 8 1 16 1 24 1 32 1 48 1 96 8 1 8 2 8 4 8 8 8 12 2 1 4 1 8 1 16 1 24 1 32 1 48 1 96 1 1 8 2 8 4 8 2 48 3 32 4 24 6 16 16 6 24 4 32 3 48 2"}
 PROFILE_CFGS=${PROFILE_CFGS:-""}
 SCOREP_MPI_ENABLE_GROUPS=${SCOREP_MPI_ENABLE_GROUPS:-"cg,coll,p2p,xnonblock"}
+PARTITION=${PARTITION:-"intelsr_devel"}
 
 OUT="openmpi_profile_$(date +%Y%m%d_%H%M%S)"
 OUT_DIR="$(pwd)/$OUT"
@@ -190,7 +191,7 @@ echo "$nthreads,$nprocs,$weak_grid,\$weak_t" | tee -a "$WEAK_CSV"
 EOF
 )
 
-    salloc --nodes=1 --ntasks="$nprocs" --cpus-per-task="$nthreads" --exclusive --partition=intelsr_devel \
+    salloc --nodes=1 --ntasks="$nprocs" --cpus-per-task="$nthreads" --exclusive --partition="$PARTITION" \
       -- /bin/bash -lc "$allocation_script"
 }
 
@@ -218,7 +219,7 @@ run_profiles "$nprocs" "$nthreads"
 EOF
 )
 
-    salloc --nodes=1 --ntasks="$nprocs" --cpus-per-task="$nthreads" --exclusive --partition=intelsr_devel \
+    salloc --nodes=1 --ntasks="$nprocs" --cpus-per-task="$nthreads" --exclusive --partition="$PARTITION" \
       -- /bin/bash -lc "$allocation_script"
 }
 
