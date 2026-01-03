@@ -145,13 +145,12 @@ choose_profile_base_cfg() {
 run_scorep_profile_base() {
     local nprocs=$1
     local nthreads=$2
+    local seed_filter=$3
 
     local tag="base_${nprocs}procs_${nthreads}threads"
-    local map_log="map_${tag}.log"
     local prof_log="scorep_profile_${tag}.log"
     local prof_dir="scorep_profile_${tag}"
 
-    # Score-P profiling only
     run_step \
       "scorep_profile_${tag}" \
       "load_scorep_modules" \
@@ -161,6 +160,7 @@ run_scorep_profile_base() {
       "export SCOREP_EXPERIMENT_DIRECTORY=\"$prof_dir\";
        export SCOREP_ENABLE_PROFILING=true;
        export SCOREP_ENABLE_TRACING=false;
+       export SCOREP_FILTERING_FILE=\"$seed_filter\";
        export SCOREP_MPI_ENABLE_GROUPS=\"$SCOREP_MPI_ENABLE_GROUPS\";"
 }
 
@@ -390,8 +390,6 @@ choose_profile_base_cfg() {
 }
 
 generate_filter_and_score() {
-  # UPDATED: generates auto filter from base profile, augments it with manual excludes,
-  # estimates memory, and prints filter path+content into the log.
   local prof_dir=$1
   local filt_file=$2
   local score_log=$3
@@ -403,10 +401,14 @@ generate_filter_and_score() {
     local profile_file="$prof_dir/profile.cubex"
     [[ -f "$profile_file" ]] || { echo "ERROR: Missing $profile_file" >&2; exit 1; }
 
+    # scorep-score -g is executed after cd into a temp dir, so use an absolute path
+    local profile_file_abs
+    profile_file_abs="$(readlink -f "$profile_file")"
+
     mkdir -p "$(dirname "$filt_file")"
 
-    echo "=== scorep-score report (unfiltered; after seed filter applied during profiling) ==="
-    scorep-score -r "$profile_file"
+    echo "=== scorep-score report (after seed filter applied during profiling) ==="
+    scorep-score -r "$profile_file_abs"
 
     echo
     echo "=== generating automatic filter (scorep-score -g) ==="
@@ -416,8 +418,7 @@ generate_filter_and_score() {
 
     (
       cd "$tmpdir"
-      # Same heuristics as your known-good script:
-      scorep-score -g bufferpercent=1,timepervisit=1,type=usr "$profile_file"
+      scorep-score -g bufferpercent=1,timepervisit=1,type=usr "$profile_file_abs"
       [[ -f initial_scorep.filter ]] || { echo "ERROR: scorep-score -g did not create initial_scorep.filter" >&2; exit 1; }
       mv -f initial_scorep.filter "$filt_file"
     )
@@ -428,7 +429,7 @@ generate_filter_and_score() {
 
     echo
     echo "=== estimating effect of final filter (scorep-score -r -f) ==="
-    scorep-score -r -f "$filt_file" "$profile_file"
+    scorep-score -r -f "$filt_file" "$profile_file_abs"
 
     echo
     scorep_show_filter "$filt_file"
