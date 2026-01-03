@@ -438,7 +438,8 @@ generate_filter_and_score() {
 
 run_scorep_filter_pipeline() {
   # One entry-point: pick base cfg, seed-filtered profiling, auto filter, augment, score.
-  # Outputs (echoes) the final filter path so the caller can store it.
+  # All diagnostics go to stderr; ONLY the final filter path is printed to stdout.
+
   local base_cfg base_p base_t
   local seed_filter final_filter score_log base_tag base_prof_dir
 
@@ -453,19 +454,21 @@ run_scorep_filter_pipeline() {
   final_filter="$OUT_DIR/scorep.filt"
   score_log="$OUT_DIR/scorep_score_${base_tag}.log"
 
-  echo "Selected base profiling config for filter generation: procs=${base_p}, threads=${base_t}"
+  {
+    echo "Selected base profiling config for filter generation: procs=${base_p}, threads=${base_t}"
+    scorep_write_filter_with_manual_excludes "$seed_filter"
+    echo "Seed filter written to: $seed_filter"
 
-  scorep_write_filter_with_manual_excludes "$seed_filter"
-  echo "Seed filter: $seed_filter"
+    # Base profiling run (seed-filtered)
+    run_profile_base_alloc "$base_p" "$base_t" "$seed_filter"
 
-  # Base profiling run (seed-filtered)
-  run_profile_base_alloc "$base_p" "$base_t" "$seed_filter"
+    # Auto filter + augment + estimates
+    generate_filter_and_score "$base_prof_dir" "$final_filter" "$score_log"
+    echo "scorep-score log: $score_log"
+    echo "Final filter file: $final_filter"
+  } >&2
 
-  # Auto filter + augment + estimates
-  generate_filter_and_score "$base_prof_dir" "$final_filter" "$score_log"
-  echo "scorep-score log: $score_log"
-
-  # Return final filter path on stdout for easy capture
+  # The ONLY stdout output: usable as command-substitution result
   echo "$final_filter"
 }
 
