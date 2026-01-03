@@ -79,13 +79,15 @@ OMPI_COMMON_OPTIONS=(
 )
 ompi_bind_args() {
   local nprocs=$1
+  local nthreads=$2
+
   if [[ "$nprocs" -eq 1 ]]; then
     # Avoid OMPI 5 refusing cross-socket binding for a single rank.
     # Let OpenMP pin threads (OMP_PLACES/OMP_PROC_BIND).
-    echo "--bind-to none"
+    echo "--bind-to none --map-by ppr:1:node"
   else
     # Keep the previous behavior for multi-rank runs.
-    echo "--bind-to core"
+    echo "--bind-to core --map-by ppr:${nprocs}:node:PE=${nthreads}"
   fi
 }
 
@@ -152,7 +154,7 @@ run_scorep_profile_base() {
       "scorep_profile_${tag}" \
       "load_scorep_modules" \
       "$nthreads" \
-      "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs") --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-scorep-instr $N $MEN" \
+      "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs" "$nthreads") ./snowman-scorep-instr $N $MEN" \
       "$prof_log" \
       "export SCOREP_EXPERIMENT_DIRECTORY=\"$prof_dir\";
        export SCOREP_ENABLE_PROFILING=true;
@@ -204,14 +206,14 @@ run_trace_cfg() {
       "map_${tag}" \
       "load_linaroforge_modules" \
       "$nthreads" \
-      "map --profile mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs") --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-linaroforge $N $MEN" \
+      "map --profile mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs" "$nthreads") ./snowman-linaroforge $N $MEN" \
       "$map_log"
 
     run_step \
       "scorep_trace_${tag}" \
       "load_scorep_modules" \
       "$nthreads" \
-      "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs") --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-scorep-instr $N $MEN" \
+      "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs" "$nthreads") ./snowman-scorep-instr $N $MEN" \
       "$trace_log" \
       "export SCOREP_EXPERIMENT_DIRECTORY=\"$trace_dir\";
        export SCOREP_ENABLE_PROFILING=false;
@@ -237,7 +239,7 @@ timed_run() {
       "time_${tag}" \
       "load_plain_modules" \
       "$nthreads" \
-      "time mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs") --map-by ppr:${nprocs}:node:pe=${nthreads} ./snowman-plain $grid $snowmen" \
+      "time mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs" "$nthreads") ./snowman-plain $grid $snowmen" \
       "$log" >&2
 
     awk '/^real/ { sub(/m/, " "); sub(/s/, ""); print $2*60 + $3 }' "$log"
