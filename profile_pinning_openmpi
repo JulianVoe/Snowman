@@ -7,8 +7,10 @@ MEN=${MEN:-4}
 WS_N=${WS_N:-128}
 WS_MEN=${WS_MEN:-3}
 
-TIMING_CFGS=${TIMING_CFGS:-"1 1 1 2 1 4 1 8 1 16 1 24 1 32 1 48 1 96 8 1 8 2 8 4 8 8 8 12 2 1 4 1 16 1 24 1 32 1 48 1 96 1 2 8 4 8 12 8 2 48 3 32 4 24 6 16 16 6 24 4 32 3 48 2"}
-PROFILE_CFGS=${PROFILE_CFGS:-"1 1 1 8 1 16 1 32 1 96 8 1 16 1 32 1 96 1 8 12 12 8"}
+TIMING_CFGS=${TIMING_CFGS:-"1 96 96 1 8 12"}
+PROFILE_CFGS=${PROFILE_CFGS:-"1 96 96 1 8 12"}
+#TIMING_CFGS=${TIMING_CFGS:-"1 1 1 2 1 4 1 8 1 16 1 24 1 32 1 48 1 96 8 1 8 2 8 4 8 8 8 12 2 1 4 1 16 1 24 1 32 1 48 1 96 1 2 8 4 8 12 8 2 48 3 32 4 24 6 16 16 6 24 4 32 3 48 2"}
+#PROFILE_CFGS=${PROFILE_CFGS:-"1 1 1 8 1 16 1 32 1 96 8 1 16 1 32 1 96 1 8 12 12 8"}
 
 SCOREP_MPI_ENABLE_GROUPS=${SCOREP_MPI_ENABLE_GROUPS:-"cg,coll,p2p,xnonblock"}
 PARTITION=${PARTITION:-"intelsr_devel"}
@@ -71,9 +73,6 @@ build_scorep
 mv snowman-instr "$OUT_DIR/snowman-scorep-instr"
 
 cd "$OUT_DIR"
-
-# send debug prints here; will not be captured by $(...)
-exec 3>&1
 
 # --- OpenMPI process pinning -----------------------------------------------
 OMPI_COMMON_OPTIONS=(
@@ -440,8 +439,9 @@ generate_filter_and_score() {
 }
 
 run_scorep_filter_pipeline() {
-  # One entry-point: pick base cfg, seed-filtered profiling, auto filter, augment, score.
-  # All diagnostics go to FD 3 (original stdout); ONLY the final filter path goes to stdout.
+  # Usage: run_scorep_filter_pipeline VAR_NAME
+  # Writes progress to stdout; stores final filter path into VAR_NAME.
+  local __outvar=$1
 
   local base_cfg base_p base_t
   local seed_filter final_filter score_log base_tag base_prof_dir
@@ -457,25 +457,21 @@ run_scorep_filter_pipeline() {
   final_filter="$OUT_DIR/scorep.filt"
   score_log="$OUT_DIR/scorep_score_${base_tag}.log"
 
-  {
-    echo "Selected base profiling config for filter generation: procs=${base_p}, threads=${base_t}"
-    scorep_write_filter_with_manual_excludes "$seed_filter"
-    echo "Seed filter written to: $seed_filter"
+  echo "Selected base profiling config for filter generation: procs=${base_p}, threads=${base_t}"
+  scorep_write_filter_with_manual_excludes "$seed_filter"
+  echo "Seed filter written to: $seed_filter"
 
-    # Base profiling run (seed-filtered)
-    run_profile_base_alloc "$base_p" "$base_t" "$seed_filter"
+  run_profile_base_alloc "$base_p" "$base_t" "$seed_filter"
 
-    # Auto filter + augment + estimates
-    generate_filter_and_score "$base_prof_dir" "$final_filter" "$score_log"
-    echo "scorep-score log: $score_log"
-    echo "Final filter file: $final_filter"
-  } >&3
+  generate_filter_and_score "$base_prof_dir" "$final_filter" "$score_log"
+  echo "scorep-score log: $score_log"
+  echo "Final filter file: $final_filter"
 
-  # The ONLY stdout output: usable as command-substitution result
-  echo "$final_filter"
+  # Assign result to caller variable
+  printf -v "$__outvar" '%s' "$final_filter"
 }
 
-FILTER_FILE="$(run_scorep_filter_pipeline)"
+run_scorep_filter_pipeline FILTER_FILE
 echo "Final filter: $FILTER_FILE"
 
 # Now run all Score-P tracing runs (only) using the same filter + big memory buffer
