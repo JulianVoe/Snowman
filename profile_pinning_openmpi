@@ -322,8 +322,12 @@ fi
 
 # Central place for the manual excludes (NO duplication anywhere else).
 scorep_manual_excludes() {
+#  cat <<'EOF'
+#  *RayTracer::intersect_sphere*
+#  *RayTracer::intersect_plane*
+#EOF
+
   cat <<'EOF'
-  *RayTracer::intersect_sphere*
   *RayTracer::intersect_plane*
 EOF
 }
