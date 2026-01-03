@@ -6,7 +6,8 @@ N=${N:-1024}
 MEN=${MEN:-4}
 WS_N=${WS_N:-128}
 WS_MEN=${WS_MEN:-3}
-CFGS=${CFGS:-"1 1 1 2 1 4 1 8 1 16 1 24 1 32 1 48 1 96 8 1 8 2 8 4 8 8 8 12 2 1 4 1 8 1 16 1 24 1 32 1 48 1 96 1 1 8 2 8 4 8 2 48 3 32 4 24 6 16 16 6 24 4 32 3 48 2"}
+TIMING_CFGS=${TIMING_CFGS:-"1 1 1 2 1 4 1 8 1 16 1 24 1 32 1 48 1 96 8 1 8 2 8 4 8 8 8 12 2 1 4 1 8 1 16 1 24 1 32 1 48 1 96 1 1 8 2 8 4 8 2 48 3 32 4 24 6 16 16 6 24 4 32 3 48 2"}
+PROFILE_CFGS=${PROFILE_CFGS:-""}
 SCOREP_MPI_ENABLE_GROUPS=${SCOREP_MPI_ENABLE_GROUPS:-"cg,coll,p2p,xnonblock"}
 
 OUT="openmpi_profile_$(date +%Y%m%d_%H%M%S)"
@@ -157,11 +158,10 @@ weak_grid_size() {
     round "$(awk -v base="$WS_N" -v p="$procs" 'BEGIN{printf "%.6f", base*sqrt(p)}')"
 }
 
-run_config() {
+run_timing_config() {
     local nprocs=$1
     local nthreads=$2
     local weak_grid
-    local weak_pixels
     local allocation_script
 
     weak_grid=$(weak_grid_size "$nprocs")
@@ -173,7 +173,6 @@ $(declare -f load_plain_modules)
 $(declare -f load_linaroforge_modules)
 $(declare -f load_scorep_modules)
 $(declare -f run_step)
-$(declare -f run_profiles)
 $(declare -f timed_run)
 OMPI_COMMON_OPTIONS=(
   --bind-to core
@@ -185,7 +184,6 @@ N="$N"
 MEN="$MEN"
 strong_t=\$(timed_run "$nprocs" "$nthreads" "$N" "$MEN" "strong")
 echo "$nthreads,$nprocs,\$strong_t" | tee -a "$CSV"
-run_profiles "$nprocs" "$nthreads"
 weak_t=\$(timed_run "$nprocs" "$nthreads" "$weak_grid" "$WS_MEN" "weak_${weak_grid}")
 echo "$nthreads,$nprocs,$weak_grid,\$weak_t" | tee -a "$WEAK_CSV"
 EOF
@@ -195,27 +193,70 @@ EOF
       -- /bin/bash -lc "$allocation_script"
 }
 
+run_profile_config() {
+    local nprocs=$1
+    local nthreads=$2
+    local allocation_script
+
+    allocation_script=$(cat <<EOF
+set -euo pipefail
+cd "$OUT_DIR"
+$(declare -f load_linaroforge_modules)
+$(declare -f load_scorep_modules)
+$(declare -f run_step)
+$(declare -f run_profiles)
+OMPI_COMMON_OPTIONS=(
+  --bind-to core
+  --report-bindings
+  --mca rmaps_base_oversubscribe 0
+)
+SCOREP_MPI_ENABLE_GROUPS="$SCOREP_MPI_ENABLE_GROUPS"
+N="$N"
+MEN="$MEN"
+run_profiles "$nprocs" "$nthreads"
+EOF
+)
+
+    salloc --nodes=1 --ntasks="$nprocs" --cpus-per-task="$nthreads" --exclusive --partition=intelsr_devel \
+      -- /bin/bash -lc "$allocation_script"
+}
+
 CSV="runs_openmpi.csv"
 WEAK_CSV="runs_openmpi_weak.csv"
-echo "threads,procs,seconds" > "$CSV"
-echo "threads,procs,pixels,seconds" > "$WEAK_CSV"
+if [[ -n "${TIMING_CFGS// }" ]]; then
+  echo "threads,procs,seconds" > "$CSV"
+  echo "threads,procs,pixels,seconds" > "$WEAK_CSV"
+fi
 
-set -- $CFGS
+set -- $TIMING_CFGS
 while [ $# -gt 0 ]; do
   procs=$1
   threads=$2
-  echo "Running config: procs=${procs}, threads=${threads}"
-  run_config "$procs" "$threads"
+  echo "Running timing config: procs=${procs}, threads=${threads}"
+  run_timing_config "$procs" "$threads"
   shift 2
 done
 
-echo "All runs finished. Map logs:"
-ls map_*.log
+set -- $PROFILE_CFGS
+while [ $# -gt 0 ]; do
+  procs=$1
+  threads=$2
+  echo "Running profiling config: procs=${procs}, threads=${threads}"
+  run_profile_config "$procs" "$threads"
+  shift 2
+done
 
-echo "Score-P experiment directories:"
-ls -d scorep_* 2>/dev/null || true
+if [[ -n "${PROFILE_CFGS// }" ]]; then
+  echo "All profiling runs finished. Map logs:"
+  ls map_*.log
 
-echo "Timing CSV file: $CSV"
-echo "Weak scaling CSV file: $WEAK_CSV"
-echo "Timing binding logs:"
-ls binding_*.log
+  echo "Score-P experiment directories:"
+  ls -d scorep_* 2>/dev/null || true
+fi
+
+if [[ -n "${TIMING_CFGS// }" ]]; then
+  echo "Timing CSV file: $CSV"
+  echo "Weak scaling CSV file: $WEAK_CSV"
+  echo "Timing binding logs:"
+  ls binding_*.log
+fi
