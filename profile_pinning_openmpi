@@ -1,0 +1,519 @@
+#!/bin/bash
+set -euo pipefail
+
+# --- configuration ---------------------------------------------------------
+N=${N:-1024}
+MEN=${MEN:-4}
+WS_N=${WS_N:-128}
+WS_MEN=${WS_MEN:-3}
+
+TIMING_CFGS=${TIMING_CFGS-"1 1 1 2 1 4 1 8 1 16 1 24 1 32 1 48 1 96 8 1 8 2 8 4 8 8 8 12 2 1 4 1 16 1 24 1 32 1 48 1 96 1 2 8 4 8 12 8 2 48 3 32 4 24 6 16 16 6 24 4 32 3 48 2"}
+PROFILE_CFGS=${PROFILE_CFGS-"1 1 1 8 1 16 1 32 1 96 8 1 16 1 32 1 96 1 8 12 12 8"}
+
+SCOREP_MPI_ENABLE_GROUPS=${SCOREP_MPI_ENABLE_GROUPS:-"cg,coll,p2p,xnonblock"}
+PARTITION=${PARTITION:-"intelsr_devel"}
+
+# Score-P settings you’ll actually use
+# Note: 4G is the documented maximum supported by Score-P (per process). 
+SCOREP_TRACE_MEMORY=${SCOREP_TRACE_MEMORY:-"4G"}
+
+OUT="openmpi_scorep_$(date +%Y%m%d_%H%M%S)"
+OUT_DIR="$(pwd)/$OUT"
+mkdir -p "$OUT_DIR"
+echo "Writing results to: $OUT_DIR"
+
+# --- environment / build ---------------------------------------------------
+load_plain_modules() {
+  module purge
+  module load GCC/13.2.0
+  module load OpenMPI/4.1.6-GCC-13.2.0
+}
+
+load_linaroforge_modules() {
+  module purge
+  module load GCC/13.2.0
+  module load OpenMPI/4.1.6-GCC-13.2.0
+  module load LinaroForge/25.0.3-GCCcore-13.2.0-linux-x86_64
+}
+
+load_scorep_modules() {
+  module purge
+  module load GCC/13.3.0
+  module load OpenMPI/5.0.3-GCC-13.3.0
+  module load Score-P
+}
+
+build_plain() {
+  load_plain_modules
+  make clean
+  CXX=mpic++ CXXFLAGS="-O3 -std=c++17 -fopenmp" make
+}
+
+build_linaroforge() {
+  load_linaroforge_modules
+  make clean
+  CXX=mpic++ CXXFLAGS="-O3 -std=c++17 -fopenmp -g" make
+}
+
+build_scorep() {
+  load_scorep_modules
+  make clean
+  INSTR_CXX=scorep-mpicxx INSTR_CXX_FLAGS="-O3 -std=c++17 -fopenmp -g" make instr
+}
+
+build_plain
+mv snowman "$OUT_DIR/snowman-plain"
+
+build_linaroforge
+mv snowman "$OUT_DIR/snowman-linaroforge"
+
+build_scorep
+mv snowman-instr "$OUT_DIR/snowman-scorep-instr"
+
+cd "$OUT_DIR"
+
+# --- OpenMPI process pinning -----------------------------------------------
+OMPI_COMMON_OPTIONS=(
+  --report-bindings
+  --mca rmaps_base_oversubscribe 0
+)
+ompi_bind_args() {
+  local nprocs=$1
+  local nthreads=$2
+
+  if [[ "$nprocs" -eq 1 ]]; then
+    # Avoid OMPI 5 refusing cross-socket binding for a single rank.
+    # Let OpenMP pin threads (OMP_PLACES/OMP_PROC_BIND).
+    echo "--bind-to none --map-by ppr:1:node"
+  else
+    # Keep the previous behavior for multi-rank runs.
+    echo "--bind-to core --map-by ppr:${nprocs}:node:PE=${nthreads}"
+  fi
+}
+
+# --- OpenMP thread pinning inside each MPI rank ----------------------------
+export OMP_PLACES=cores
+export OMP_PROC_BIND=close
+
+run_step() {
+    local job_name=$1
+    local module_loader=$2
+    local omp_threads=$3
+    local command=$4
+    local log=$5
+    local env_setup=${6:-}
+
+    echo "Running ${job_name} (log: ${log})"
+
+    (
+      set -euo pipefail
+      "$module_loader"
+      export OMP_NUM_THREADS="$omp_threads"
+      export OMP_PLACES=cores
+      export OMP_PROC_BIND=close
+      if [[ -n "$env_setup" ]]; then
+        eval "$env_setup"
+      fi
+      eval "$command"
+    ) >"$log" 2>&1
+}
+
+# Pick one “representative worst-case” profile config to build the filter from:
+# chooses the pair in PROFILE_CFGS that maximizes procs*threads.
+choose_profile_base_cfg() {
+  local best_p=1 best_t=1 best_score=0
+  local p t score
+
+  set -- $PROFILE_CFGS
+  while [[ $# -gt 0 ]]; do
+    p=$1; t=$2
+    score=$((p*t))
+    if (( score > best_score )); then
+      best_score=$score
+      best_p=$p
+      best_t=$t
+    fi
+    shift 2
+  done
+
+  echo "$best_p $best_t"
+}
+
+# Run a single Score-P profile measurement (no tracing) – used to generate filter + score
+run_scorep_profile_base() {
+    local nprocs=$1
+    local nthreads=$2
+    local seed_filter=$3
+
+    local tag="base_${nprocs}procs_${nthreads}threads"
+    local prof_log="scorep_profile_${tag}.log"
+    local prof_dir="scorep_profile_${tag}"
+
+    run_step \
+      "scorep_profile_${tag}" \
+      "load_scorep_modules" \
+      "$nthreads" \
+      "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs" "$nthreads") ./snowman-scorep-instr $N $MEN" \
+      "$prof_log" \
+      "export SCOREP_EXPERIMENT_DIRECTORY=\"$prof_dir\";
+       export SCOREP_ENABLE_PROFILING=true;
+       export SCOREP_ENABLE_TRACING=false;
+       export SCOREP_FILTERING_FILE=\"$seed_filter\";
+       export SCOREP_MPI_ENABLE_GROUPS=\"$SCOREP_MPI_ENABLE_GROUPS\";"
+}
+
+# Run Score-P tracing only (with filter + big buffer) for a given config
+run_trace_cfg() {
+    local nprocs=$1
+    local nthreads=$2
+    local filt_file=$3
+
+    local tag="${nprocs}procs_${nthreads}threads"
+    local map_log="map_${tag}.log"
+    local trace_log="scorep_trace_${tag}.log"
+    local trace_dir="scorep_trace_${tag}"
+
+	run_step \
+      "map_${tag}" \
+      "load_linaroforge_modules" \
+      "$nthreads" \
+      "map --profile mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs" "$nthreads") ./snowman-linaroforge $N $MEN" \
+      "$map_log"
+
+    run_step \
+      "scorep_trace_${tag}" \
+      "load_scorep_modules" \
+      "$nthreads" \
+      "mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs" "$nthreads") ./snowman-scorep-instr $N $MEN" \
+      "$trace_log" \
+      "export SCOREP_EXPERIMENT_DIRECTORY=\"$trace_dir\";
+       export SCOREP_ENABLE_PROFILING=false;
+       export SCOREP_ENABLE_TRACING=true;
+       export SCOREP_FILTERING_FILE=\"$filt_file\";
+       export SCOREP_TOTAL_MEMORY=\"$SCOREP_TRACE_MEMORY\";
+       export SCOREP_MPI_ENABLE_GROUPS=\"$SCOREP_MPI_ENABLE_GROUPS\";"
+}
+
+timed_run() {
+    local nprocs=$1
+    local nthreads=$2
+    local grid=$3
+    local snowmen=$4
+    local label=$5
+
+    local tag="${nprocs}procs_${nthreads}threads_${label}"
+    local log="binding_${tag}.log"
+
+    echo "Timing config: procs=${nprocs}, threads=${nthreads}, grid=${grid}, snowmen=${snowmen} (log: ${log})" >&2
+
+    run_step \
+      "time_${tag}" \
+      "load_plain_modules" \
+      "$nthreads" \
+      "time mpirun -np $nprocs ${OMPI_COMMON_OPTIONS[*]} $(ompi_bind_args "$nprocs" "$nthreads") ./snowman-plain $grid $snowmen" \
+      "$log" >&2
+
+    awk '/^real/ { sub(/m/, " "); sub(/s/, ""); print $2*60 + $3 }' "$log"
+}
+
+round() {
+    awk -v x="$1" 'BEGIN{printf "%d", (x<0)?int(x-0.5):int(x+0.5)}'
+}
+
+weak_grid_size() {
+    local procs=$1
+    local threads=$2
+    round "$(awk -v base="$WS_N" -v p="$procs" -v t="$threads" 'BEGIN{printf "%.6f", base*sqrt(p*t)}')"
+}
+
+run_timing_config() {
+    local nprocs=$1
+    local nthreads=$2
+    local weak_grid
+    local allocation_script
+
+    weak_grid=$(weak_grid_size "$nprocs" "$nthreads")
+
+    allocation_script=$(cat <<EOF
+set -euo pipefail
+cd "$OUT_DIR"
+$(declare -f ompi_bind_args)
+$(declare -f load_plain_modules)
+$(declare -f run_step)
+$(declare -f timed_run)
+OMPI_COMMON_OPTIONS="$OMPI_COMMON_OPTIONS"
+N="$N"
+MEN="$MEN"
+WS_MEN="$WS_MEN"
+strong_t=\$(timed_run "$nprocs" "$nthreads" "$N" "$MEN" "strong")
+echo "$nthreads,$nprocs,\$strong_t" | tee -a "$CSV"
+weak_t=\$(timed_run "$nprocs" "$nthreads" "$weak_grid" "$WS_MEN" "weak_${weak_grid}")
+echo "$nthreads,$nprocs,$weak_grid,\$weak_t" | tee -a "$WEAK_CSV"
+EOF
+)
+
+    salloc --nodes=1 --ntasks="$nprocs" --cpus-per-task="$nthreads" --exclusive --partition="$PARTITION" \
+      -- /bin/bash -lc "$allocation_script"
+}
+
+run_profile_base_alloc() {
+    local nprocs=$1
+    local nthreads=$2
+    local seed_filter=$3
+    local allocation_script
+
+    allocation_script=$(cat <<EOF
+set -euo pipefail
+cd "$OUT_DIR"
+$(declare -f ompi_bind_args)
+$(declare -f load_scorep_modules)
+$(declare -f run_step)
+$(declare -f run_scorep_profile_base)
+SCOREP_MPI_ENABLE_GROUPS="$SCOREP_MPI_ENABLE_GROUPS"
+N="$N"
+MEN="$MEN"
+OMPI_COMMON_OPTIONS="$OMPI_COMMON_OPTIONS"
+run_scorep_profile_base "$nprocs" "$nthreads" "$seed_filter"
+EOF
+)
+
+    salloc --nodes=1 --ntasks="$nprocs" --cpus-per-task="$nthreads" --exclusive --partition="$PARTITION" \
+      -- /bin/bash -lc "$allocation_script"
+}
+
+run_trace_cfg_alloc() {
+    local nprocs=$1
+    local nthreads=$2
+    local filt_file=$3
+    local allocation_script
+
+    allocation_script=$(cat <<EOF
+set -euo pipefail
+cd "$OUT_DIR"
+$(declare -f ompi_bind_args)
+$(declare -f load_linaroforge_modules)
+$(declare -f load_scorep_modules)
+$(declare -f run_step)
+$(declare -f run_trace_cfg)
+SCOREP_MPI_ENABLE_GROUPS="$SCOREP_MPI_ENABLE_GROUPS"
+SCOREP_TRACE_MEMORY="$SCOREP_TRACE_MEMORY"
+N="$N"
+MEN="$MEN"
+OMPI_COMMON_OPTIONS="$OMPI_COMMON_OPTIONS"
+run_trace_cfg "$nprocs" "$nthreads" "$filt_file"
+EOF
+)
+
+    salloc --nodes=1 --ntasks="$nprocs" --cpus-per-task="$nthreads" --exclusive --partition="$PARTITION" \
+      -- /bin/bash -lc "$allocation_script"
+}
+
+# --- CSV for timing ---------------------------------------------------------
+CSV="runs_openmpi.csv"
+WEAK_CSV="runs_openmpi_weak.csv"
+if [[ -n "${TIMING_CFGS// }" ]]; then
+  echo "threads,procs,seconds" > "$CSV"
+  echo "threads,procs,pixels,seconds" > "$WEAK_CSV"
+fi
+
+# --- Score-P filter pipeline -----------------------------------------------
+
+# Central place for the manual excludes (NO duplication anywhere else).
+scorep_manual_excludes() {
+#  cat <<'EOF'
+#  *RayTracer::intersect_sphere*
+#  *RayTracer::intersect_plane*
+#EOF
+
+  cat <<'EOF'
+EOF
+}
+
+scorep_write_filter_with_manual_excludes() {
+  # Writes a minimal valid filter containing ONLY the manual excludes.
+  local filt_file=$1
+  mkdir -p "$(dirname "$filt_file")"
+  {
+    echo "SCOREP_REGION_NAMES_BEGIN"
+    echo "EXCLUDE"
+    scorep_manual_excludes
+    echo "SCOREP_REGION_NAMES_END"
+  } >"$filt_file"
+}
+
+scorep_augment_filter_with_manual_excludes() {
+  # Ensures the manual excludes are present in an existing filter file.
+  # Keeps things simple+robust: it appends a second REGION_NAMES block if needed.
+  # Score-P accepts multiple blocks; this avoids brittle in-place parsing.
+  local filt_file=$1
+  local tmp="${filt_file}.tmp"
+
+  # If already present, do nothing.
+  if grep -Fq "RayTracer::intersect_sphere" "$filt_file" && grep -Fq "RayTracer::intersect_plane" "$filt_file"; then
+    return 0
+  fi
+
+  cp -f "$filt_file" "$tmp"
+  {
+    echo
+    echo "SCOREP_REGION_NAMES_BEGIN"
+    echo "EXCLUDE"
+    scorep_manual_excludes
+    echo "SCOREP_REGION_NAMES_END"
+  } >>"$tmp"
+  mv -f "$tmp" "$filt_file"
+}
+
+scorep_show_filter() {
+  local filt_file=$1
+  echo "Filter path: $filt_file"
+  echo "----- filter content begin -----"
+  cat "$filt_file"
+  echo "----- filter content end -------"
+}
+
+choose_profile_base_cfg() {
+  # unchanged interface; picks (procs,threads) maximizing procs*threads
+  local best_p=1 best_t=1 best_score=0
+  local p t score
+  set -- $PROFILE_CFGS
+  while [[ $# -gt 0 ]]; do
+    p=$1; t=$2
+    score=$((p*t))
+    if (( score > best_score )); then
+      best_score=$score
+      best_p=$p
+      best_t=$t
+    fi
+    shift 2
+  done
+  echo "$best_p $best_t"
+}
+
+generate_filter_and_score() {
+  local prof_dir=$1
+  local filt_file=$2
+  local score_log=$3
+
+  (
+    set -euo pipefail
+    load_scorep_modules
+
+    local profile_file="$prof_dir/profile.cubex"
+    [[ -f "$profile_file" ]] || { echo "ERROR: Missing $profile_file" >&2; exit 1; }
+
+    # scorep-score -g is executed after cd into a temp dir, so use an absolute path
+    local profile_file_abs
+    profile_file_abs="$(readlink -f "$profile_file")"
+
+    mkdir -p "$(dirname "$filt_file")"
+
+    echo "=== scorep-score report (after seed filter applied during profiling) ==="
+    scorep-score -r "$profile_file_abs"
+
+    echo
+    echo "=== generating automatic filter (scorep-score -g) ==="
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+
+    (
+      cd "$tmpdir"
+      scorep-score -g bufferpercent=1,timepervisit=1,type=usr "$profile_file_abs"
+      [[ -f initial_scorep.filter ]] || { echo "ERROR: scorep-score -g did not create initial_scorep.filter" >&2; exit 1; }
+      mv -f initial_scorep.filter "$filt_file"
+    )
+
+    echo
+    echo "=== augmenting automatic filter with manual excludes ==="
+    scorep_augment_filter_with_manual_excludes "$filt_file"
+
+    echo
+    echo "=== estimating effect of final filter (scorep-score -r -f) ==="
+    scorep-score -r -f "$filt_file" "$profile_file_abs"
+
+    echo
+    scorep_show_filter "$filt_file"
+
+    echo
+    echo "=== done ==="
+  ) >"$score_log" 2>&1
+}
+
+run_scorep_filter_pipeline() {
+  # Usage: run_scorep_filter_pipeline VAR_NAME
+  # Writes progress to stdout; stores final filter path into VAR_NAME.
+  local __outvar=$1
+
+  local base_cfg base_p base_t
+  local seed_filter final_filter score_log base_tag base_prof_dir
+
+  base_cfg=$(choose_profile_base_cfg)
+  base_p=$(awk '{print $1}' <<<"$base_cfg")
+  base_t=$(awk '{print $2}' <<<"$base_cfg")
+
+  base_tag="base_${base_p}procs_${base_t}threads"
+  base_prof_dir="scorep_profile_${base_tag}"
+
+  seed_filter="$OUT_DIR/scorep.seed.filt"
+  final_filter="$OUT_DIR/scorep.filt"
+  score_log="$OUT_DIR/scorep_score_${base_tag}.log"
+
+  echo "Selected base profiling config for filter generation: procs=${base_p}, threads=${base_t}"
+  scorep_write_filter_with_manual_excludes "$seed_filter"
+  echo "Seed filter written to: $seed_filter"
+
+  run_profile_base_alloc "$base_p" "$base_t" "$seed_filter"
+
+  generate_filter_and_score "$base_prof_dir" "$final_filter" "$score_log"
+  echo "scorep-score log: $score_log"
+  echo "Final filter file: $final_filter"
+
+  # Assign result to caller variable
+  printf -v "$__outvar" '%s' "$final_filter"
+}
+
+has_cfgs() {
+  [[ -n "${1//[[:space:]]/}" ]]
+}
+
+if has_cfgs "${PROFILE_CFGS:-}"; then
+  run_scorep_filter_pipeline FILTER_FILE BASE_PROF_DIR
+  echo "Final filter: $FILTER_FILE"
+
+  # tracing runs
+  set -- $PROFILE_CFGS
+  while [ $# -gt 0 ]; do
+    procs=$1
+    threads=$2
+    echo "Running tracing config (filtered): procs=${procs}, threads=${threads}"
+    run_trace_cfg_alloc "$procs" "$threads" "$FILTER_FILE"
+    shift 2
+  done
+else
+  echo "PROFILE_CFGS empty -> skipping Score-P profiling/filter generation and tracing runs."
+fi
+
+# --- Timing runs (plain) ----------------------------------------------------
+if has_cfgs "${TIMING_CFGS:-}"; then
+  set -- $TIMING_CFGS
+  while [ $# -gt 0 ]; do
+    procs=$1
+    threads=$2
+    echo "Running timing config: procs=${procs}, threads=${threads}"
+    run_timing_config "$procs" "$threads"
+    shift 2
+  done
+else
+  echo "TIMING_CFGS empty -> skipping timing runs."
+fi
+
+echo
+echo "Done."
+echo "Filter file: $FILTER_FILE"
+echo "Trace dirs:"
+ls -d scorep_trace_* 2>/dev/null || true
+if [[ -n "${TIMING_CFGS// }" ]]; then
+  echo "Timing CSV: $CSV"
+  echo "Weak CSV:   $WEAK_CSV"
+fi

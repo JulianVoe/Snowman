@@ -1,0 +1,162 @@
+#!/bin/bash
+set -euo pipefail
+
+# --- configuration ---------------------------------------------------------
+N=${N:-1024}
+MEN=${MEN:-4}
+CFGS=${CFGS:-"1 96 2 48 3 32 4 24 6 16 8 12 12 8 16 6 24 4 32 3 48 2 96 1"}
+SCOREP_MPI_ENABLE_GROUPS=${SCOREP_MPI_ENABLE_GROUPS:-"cg,coll,p2p,xnonblock"}
+
+OUT="intel_profile_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$OUT"
+echo "Writing results to: $OUT"
+
+# --- environment / build ---------------------------------------------------
+# NOTE: Run this script inside a Slurm allocation (e.g., via salloc),
+# and launch mpirun directly so it uses the allocation without srun.
+load_linaroforge_modules() {
+  module purge
+  module load GCC/13.2.0
+  module load OpenMPI/4.1.6-GCC-13.2.0
+  module load LinaroForge/25.0.3-GCCcore-13.2.0-linux-x86_64
+}
+
+load_scorep_modules() {
+  module purge
+  module load GCC/13.3.0
+  module load OpenMPI/5.0.3-GCC-13.3.0
+  module load Score-P
+}
+
+build_linaroforge() {
+  load_linaroforge_modules
+  make clean
+  CXX=mpic++ CXXFLAGS="-O3 -std=c++17 -fopenmp -g" make
+}
+
+build_scorep() {
+  load_scorep_modules
+  make clean
+  CXX=mpic++ CXXFLAGS="-O3 -std=c++17 -fopenmp -g" make
+  INSTR_CXX=scorep-mpicxx INSTR_CXX_FLAGS="-O3 -std=c++17 -fopenmp -g" make instr
+}
+
+build_linaroforge
+mv snowman "$OUT/snowman-linaroforge"
+
+build_scorep
+mv snowman "$OUT/snowman-scorep"
+mv snowman-instr "$OUT/snowman-scorep-instr"
+
+cd "$OUT"
+
+# --- Intel MPI process pinning (hybrid-aware) ------------------------------
+export I_MPI_PIN=1
+export I_MPI_PIN_CELL=core
+export I_MPI_PIN_DOMAIN=omp:compact
+export I_MPI_PIN_ORDER=compact
+export I_MPI_DEBUG=5
+export I_MPI_PIN_RESPECT_CPUSET=1
+
+# --- OpenMP thread pinning inside each MPI rank ----------------------------
+export OMP_PLACES=cores
+export OMP_PROC_BIND=close
+#export OMP_DISPLAY_ENV=VERBOSE
+
+run_step() {
+    local job_name=$1
+    local module_loader=$2
+    local omp_threads=$3
+    local command=$4
+    local log=$5
+    local env_setup=${6:-}
+
+    echo "Running ${job_name} (log: ${log})"
+
+    (
+      set -euo pipefail
+      "$module_loader"
+      export OMP_NUM_THREADS="$omp_threads"
+      export OMP_PLACES=cores
+      export OMP_PROC_BIND=close
+      export I_MPI_PIN=1
+      export I_MPI_PIN_CELL=core
+      export I_MPI_PIN_DOMAIN=omp:compact
+      export I_MPI_PIN_ORDER=compact
+      export I_MPI_DEBUG=5
+      export I_MPI_PIN_RESPECT_CPUSET=1
+      if [[ -n "$env_setup" ]]; then
+        eval "$env_setup"
+      fi
+      eval "$command"
+    ) >"$log" 2>&1
+}
+
+run_profiles() {
+    local nprocs=$1
+    local nthreads=$2
+
+    local tag="${nprocs}procs_${nthreads}threads"
+    local map_log="map_${tag}.log"
+    local scorep_log="scorep_${tag}.log"
+    local scorep_dir="scorep_${tag}"
+
+    echo "Running config: procs=${nprocs}, threads=${nthreads}"
+
+    run_step \
+      "map_${tag}" \
+      "load_linaroforge_modules" \
+      "$nthreads" \
+      "map --profile mpirun -np $nprocs ./snowman-linaroforge $N $MEN" \
+      "$map_log"
+
+    run_step \
+      "scorep_${tag}" \
+      "load_scorep_modules" \
+      "$nthreads" \
+      "mpirun -np $nprocs ./snowman-scorep-instr $N $MEN" \
+      "$scorep_log" \
+      "export SCOREP_EXPERIMENT_DIRECTORY=\"$scorep_dir\"; export SCOREP_ENABLE_PROFILING=true; export SCOREP_ENABLE_TRACING=false; export SCOREP_MPI_ENABLE_GROUPS=\"$SCOREP_MPI_ENABLE_GROUPS\""
+}
+
+timed_run() {
+    local nprocs=$1
+    local nthreads=$2
+
+    local tag="${nprocs}procs_${nthreads}threads"
+    local log="binding_${tag}.log"
+
+    echo "Timing config: procs=${nprocs}, threads=${nthreads} (log: ${log})"
+
+    run_step \
+      "time_${tag}" \
+      "load_scorep_modules" \
+      "$nthreads" \
+      "time mpirun -np $nprocs ./snowman-scorep $N $MEN" \
+      "$log"
+
+    awk '/^real/ { sub(/m/, " "); sub(/s/, ""); print $2*60 + $3 }' "$log"
+}
+
+CSV="runs_intel.csv"
+echo "threads,procs,seconds" > "$CSV"
+
+set -- $CFGS
+while [ $# -gt 0 ]; do
+  procs=$1
+  threads=$2
+  run_profiles "$procs" "$threads"
+  t=$(timed_run "$procs" "$threads")
+  echo "$threads,$procs,$t" | tee -a "$CSV"
+  shift 2
+done
+
+echo "All runs finished. Map logs:"
+ls map_*.log
+
+echo "Score-P experiment directories:"
+ls -d scorep_* 2>/dev/null || true
+
+echo "Timing CSV file: $CSV"
+echo "Timing binding logs:"
+ls binding_*.log
